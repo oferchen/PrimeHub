@@ -1,0 +1,9 @@
+<settings>
+    <category label="30000">
+        <setting id="preferred_region" type="enum" label="30001" values="us|uk|de|jp" default="us" />
+        <setting id="max_resolution" type="enum" label="30002" values="auto|1080p|720p" default="auto" />
+        <setting id="use_cache" type="bool" label="30003" default="true" />
+        <setting id="cache_ttl" type="number" label="30004" default="300" />
+        <setting id="enable_perf_logging" type="bool" label="30005" default="false" />
+    </category>
+</settings>

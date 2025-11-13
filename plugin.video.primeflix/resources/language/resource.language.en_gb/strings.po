@@ -1,0 +1,75 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: PrimeFlix 1.0.0\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#30000"
+msgid "General"
+msgstr "General"
+
+msgctxt "#30001"
+msgid "Preferred region"
+msgstr "Preferred region"
+
+msgctxt "#30002"
+msgid "Maximum resolution"
+msgstr "Maximum resolution"
+
+msgctxt "#30003"
+msgid "Use cache"
+msgstr "Use cache"
+
+msgctxt "#30004"
+msgid "Cache TTL (seconds)"
+msgstr "Cache TTL (seconds)"
+
+msgctxt "#30005"
+msgid "Enable performance logging"
+msgstr "Enable performance logging"
+
+msgctxt "#32000"
+msgid "Continue Watching"
+msgstr "Continue Watching"
+
+msgctxt "#32001"
+msgid "Prime Originals"
+msgstr "Prime Originals"
+
+msgctxt "#32002"
+msgid "Movies"
+msgstr "Movies"
+
+msgctxt "#32003"
+msgid "TV"
+msgstr "TV"
+
+msgctxt "#32004"
+msgid "Recommended For You"
+msgstr "Recommended For You"
+
+msgctxt "#32005"
+msgid "Search"
+msgstr "Search"
+
+msgctxt "#32006"
+msgid "Diagnostics"
+msgstr "Diagnostics"
+
+msgctxt "#32007"
+msgid "Prime backend not available or DRM component missing — open the Amazon VOD add-on, log in, then retry."
+msgstr "Prime backend not available or DRM component missing — open the Amazon VOD add-on, log in, then retry."
+
+msgctxt "#32008"
+msgid "InputStream Adaptive is missing or disabled. Install and enable it to continue."
+msgstr "InputStream Adaptive is missing or disabled. Install and enable it to continue."
+
+msgctxt "#32009"
+msgid "Playback failed"
+msgstr "Playback failed"
+
+msgctxt "#32010"
+msgid "Backend error"
+msgstr "Backend error"
