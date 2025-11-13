@@ -1,241 +1,236 @@
-"""Home screen rendering for PrimeFlix."""
+"""Home screen builder for PrimeFlix."""
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, List, Tuple
 
 try:  # pragma: no cover - Kodi runtime
+    import xbmc
     import xbmcaddon
     import xbmcgui
     import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
+    class _XBMC:
+        LOGDEBUG = 0
+        LOGINFO = 1
+        LOGWARNING = 2
+        LOGERROR = 3
+
+        @staticmethod
+        def log(message: str, level: int = 0) -> None:
+            print(f"[xbmc:{level}] {message}")
+
     class _Addon:
-        def getAddonInfo(self, key: str) -> str:
-            return "PrimeFlix"
+        def __init__(self):
+            self._settings = {
+                "region": "0",
+                "cache_ttl": "300",
+                "use_cache": "true",
+                "perf_logging": "false",
+            }
 
         def getLocalizedString(self, code: int) -> str:
             return str(code)
 
-        def getSettingBool(self, key: str) -> bool:
-            return True
+        def getSetting(self, key: str) -> str:
+            return self._settings.get(key, "")
 
         def getSettingInt(self, key: str) -> int:
-            return 300
+            return int(self._settings.get(key, "0"))
 
-    class _GUI:
-        class ListItem:
-            def __init__(self, label: str = ""):
-                self.label = label
+        def getSettingBool(self, key: str) -> bool:
+            return self._settings.get(key, "false").lower() == "true"
 
-            def setArt(self, art: Dict[str, str]) -> None:
-                pass
+        def getAddonInfo(self, key: str) -> str:
+            if key == "name":
+                return "PrimeFlix"
+            return ""
 
-            def setInfo(self, info_type: str, info_labels: Dict[str, str]) -> None:
-                pass
+    class _Dialog:
+        @staticmethod
+        def ok(title: str, message: str) -> None:
+            print(f"DIALOG: {title}: {message}")
 
-            def setProperty(self, key: str, value: str) -> None:
-                pass
+    class _ListItem:
+        def __init__(self, label: str = "") -> None:
+            self.label = label
+            self._art = {}
+            self._info = {}
+            self._properties = {}
+
+        def setArt(self, art: dict) -> None:
+            self._art.update({k: v for k, v in art.items() if v})
+
+        def setInfo(self, info_type: str, info: dict) -> None:
+            self._info[info_type] = info
+
+        def setProperty(self, key: str, value: str) -> None:
+            self._properties[key] = value
 
     class _Plugin:
-        @staticmethod
-        def addDirectoryItem(handle, url, listitem, isFolder=False):
-            print(f"ADD DIR: {url}")
+        def __init__(self) -> None:
+            self.handle = 1
 
         @staticmethod
-        def addDirectoryItems(handle, items):
-            for args in items:
-                _Plugin.addDirectoryItem(handle, *args)
+        def addDirectoryItem(handle: int, url: str, listitem: _ListItem, isFolder: bool = False) -> None:
+            print(f"ADD {url} folder={isFolder} label={listitem.label}")
 
         @staticmethod
-        def setContent(handle, content):
-            print(f"SET CONTENT {content}")
+        def setContent(handle: int, content: str) -> None:
+            print(f"SET CONTENT: {content}")
 
+    xbmc = _XBMC()  # type: ignore
     xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
-    xbmcgui = _GUI  # type: ignore
+    xbmcgui = type("gui", (), {"Dialog": _Dialog, "ListItem": _ListItem})  # type: ignore
     xbmcplugin = _Plugin()  # type: ignore
 
-from ..backend.prime_api import get_backend
-from ..cache import get_cache
-from ..perf import log_info, log_warning, timed
-from ..preflight import ensure_ready_or_raise
-from ..router import PluginContext
+from ..backend.prime_api import BackendError, RailData, get_backend
+from ..perf import log_info, log_warning
+from ..preflight import PreflightError
+
+HOME_COLD_THRESHOLD_MS = 1500.0
+HOME_WARM_THRESHOLD_MS = 300.0
+RAIL_COLD_THRESHOLD_MS = 500.0
+RAIL_WARM_THRESHOLD_MS = 150.0
+DEFAULT_RAIL_LIMIT = 25
+
+
+@dataclass(frozen=True)
+class RailSpec:
+    identifier: str
+    label_id: int
+    content: str
+    optional: bool = False
 
 
 @dataclass
-class RailDefinition:
-    identifier: str
-    label_id: int
-    content_type: str
-    limit: int = 25
+class RailSnapshot:
+    spec: RailSpec
+    data: RailData
+    from_cache: bool
+    elapsed_ms: float
 
 
-HOME_RAILS: List[RailDefinition] = [
-    RailDefinition("continue", 20000, "episodes"),
-    RailDefinition("originals", 20010, "videos"),
-    RailDefinition("movies", 20020, "movies"),
-    RailDefinition("tv", 20030, "tvshows"),
-    RailDefinition("recommended", 20040, "videos"),
+HOME_RAILS: List[RailSpec] = [
+    RailSpec("continue", 30010, "episodes", optional=True),
+    RailSpec("originals", 30011, "tvshows"),
+    RailSpec("movies", 30012, "movies"),
+    RailSpec("tv", 30013, "tvshows"),
+    RailSpec("recommended", 30014, "videos", optional=True),
 ]
-
-CACHE_PREFIX = "rail::"
-CACHE_DEFAULT_TTL = 300
-COLD_THRESHOLD_MS = 1500
-WARM_THRESHOLD_MS = 300
-RAIL_COLD_THRESHOLD_MS = 500
-RAIL_WARM_THRESHOLD_MS = 150
+SEARCH_LABEL_ID = 30020
 
 
-def _addon() -> xbmcaddon.Addon:
-    return xbmcaddon.Addon()
+def _get_setting_int(addon: Any, setting_id: str, default: int) -> int:
+    try:
+        return addon.getSettingInt(setting_id)
+    except AttributeError:
+        try:
+            return int(addon.getSetting(setting_id))
+        except Exception:
+            return default
 
 
-@timed("home.show_home", warn_threshold_ms=COLD_THRESHOLD_MS)
-def show_home(context: PluginContext) -> None:
-    start = time.perf_counter()
-    addon = _addon()
-    ensure_ready_or_raise()
-    backend = get_backend()
+def _get_setting_bool(addon: Any, setting_id: str, default: bool) -> bool:
+    try:
+        return addon.getSettingBool(setting_id)
+    except AttributeError:
+        value = addon.getSetting(setting_id)
+        if isinstance(value, str):
+            return value.lower() == "true"
+        return default
+
+
+def _is_perf_logging_enabled(addon: Any) -> bool:
+    return _get_setting_bool(addon, "perf_logging", False)
+
+
+def _notify_error(title: str, message: str) -> None:
+    try:
+        dialog = xbmcgui.Dialog()
+        dialog.ok(title, message)
+    except Exception:
+        log_warning(message)
+
+
+def build_home_snapshot(backend, use_cache: bool, ttl: int, force_refresh: bool = False) -> Tuple[List[RailSnapshot], dict]:
+    rail_snapshots: List[RailSnapshot] = []
+    total_start = time.perf_counter()
+    for spec in HOME_RAILS:
+        start = time.perf_counter()
+        data, from_cache = backend.get_rail(spec.identifier, None, DEFAULT_RAIL_LIMIT, ttl, use_cache, force_refresh)
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        rail_snapshots.append(RailSnapshot(spec, data, from_cache, elapsed_ms))
+    total_ms = (time.perf_counter() - total_start) * 1000.0
+    metrics = {
+        "total_ms": total_ms,
+        "rail_timings": [
+            {
+                "id": snapshot.spec.identifier,
+                "elapsed_ms": snapshot.elapsed_ms,
+                "from_cache": snapshot.from_cache,
+                "count": len(snapshot.data.items),
+            }
+            for snapshot in rail_snapshots
+        ],
+    }
+    return rail_snapshots, metrics
+
+
+def show_home(context) -> None:
+    addon = xbmcaddon.Addon()
+    try:
+        backend = get_backend()
+    except PreflightError as exc:
+        _notify_error(addon.getAddonInfo("name"), str(exc))
+        return
+    except BackendError as exc:
+        _notify_error(addon.getAddonInfo("name"), str(exc))
+        return
+
     region = backend.get_region()
-    preferred_region = ["us", "uk", "de", "jp"][addon.getSettingInt("region")]
-    if region and region.lower() != preferred_region.lower():
-        message = addon.getLocalizedString(21110).format(preferred=preferred_region.upper(), backend=region.upper())
-        log_info(message)
-
+    ttl = max(30, _get_setting_int(addon, "cache_ttl", 300))
+    use_cache = _get_setting_bool(addon, "use_cache", True)
+    verbose = _is_perf_logging_enabled(addon)
     xbmcplugin.setContent(context.handle, "videos")
-    instrumentation: List[Dict[str, Any]] = []
-    for rail in HOME_RAILS:
-        _render_rail(context, rail, instrumentation)
-    _render_diagnostics(context)
-    _render_search(context)
 
-    elapsed_ms = (time.perf_counter() - start) * 1000.0
-    threshold = COLD_THRESHOLD_MS if _is_cold_run(instrumentation) else WARM_THRESHOLD_MS
-    if elapsed_ms > threshold:
-        log_warning(f"Home build exceeded target {elapsed_ms:.2f} ms (threshold {threshold} ms)")
-    else:
-        log_info(f"Home build completed in {elapsed_ms:.2f} ms")
+    if verbose and region:
+        log_info(f"Backend region in use: {region.upper()}")
 
-
-def _render_rail(context: PluginContext, rail: RailDefinition, instrumentation: List[Dict[str, Any]]) -> None:
-    addon = _addon()
-    data, metrics = _load_rail_data(rail)
-    instrumentation.append(metrics)
-
-    items = []
-    for entry in data.get("items", [])[: rail.limit]:
-        listitem = xbmcgui.ListItem(label=entry.get("title", ""))
-        art = {
-            "thumb": entry.get("thumb") or entry.get("poster"),
-            "poster": entry.get("poster") or entry.get("thumb"),
-            "fanart": entry.get("fanart"),
-        }
-        listitem.setArt({k: v for k, v in art.items() if v})
-        info_labels = {
-            "title": entry.get("title"),
-            "plot": entry.get("plot"),
-            "year": entry.get("year"),
-            "duration": entry.get("duration"),
-            "genre": ", ".join(entry.get("genres", entry.get("genre", []) or [])) if isinstance(entry.get("genres"), list) else entry.get("genre"),
-            "mediatype": detect_media_type(entry),
-        }
-        listitem.setInfo("video", {k: v for k, v in info_labels.items() if v})
-        listitem.setProperty("IsPlayable", "true")
-        asin = entry.get("asin")
-        url = context.build_url(action="play", asin=asin) if asin else context.build_url()
-        items.append((url, listitem, False))
-
-    if data.get("next_token"):
-        more_label = addon.getLocalizedString(20060)
-        listitem = xbmcgui.ListItem(label=f"{addon.getLocalizedString(rail.label_id)} · {more_label}")
-        listitem.setProperty("SpecialSort", "bottom")
-        url = context.build_url(action="list", rail=rail.identifier, cursor=data["next_token"])
-        items.append((url, listitem, True))
-
-    if items:
-        xbmcplugin.addDirectoryItems(context.handle, items)
-
-    threshold = RAIL_COLD_THRESHOLD_MS if not metrics["cached"] else RAIL_WARM_THRESHOLD_MS
-    if metrics["duration"] > threshold:
+    snapshots, metrics = build_home_snapshot(backend, use_cache=use_cache, ttl=ttl, force_refresh=False)
+    total_ms = metrics["total_ms"]
+    warm = all(snapshot.from_cache for snapshot in snapshots)
+    threshold = HOME_WARM_THRESHOLD_MS if warm else HOME_COLD_THRESHOLD_MS
+    if total_ms > threshold:
         log_warning(
-            f"{rail.identifier} rail exceeded target {metrics['duration']:.2f} ms (threshold {threshold} ms)"
+            f"Home build exceeded target ({'warm' if warm else 'cold'}): {total_ms:.2f} ms"
         )
+    elif verbose:
+        log_info(f"Home build completed in {total_ms:.2f} ms")
 
+    for snapshot in snapshots:
+        rail_threshold = RAIL_WARM_THRESHOLD_MS if snapshot.from_cache else RAIL_COLD_THRESHOLD_MS
+        if snapshot.elapsed_ms > rail_threshold:
+            log_warning(
+                f"Rail {snapshot.spec.identifier} exceeded target ({'warm' if snapshot.from_cache else 'cold'}): {snapshot.elapsed_ms:.2f} ms"
+            )
+        elif verbose:
+            log_info(
+                f"Rail {snapshot.spec.identifier} ready in {snapshot.elapsed_ms:.2f} ms (items={len(snapshot.data.items)})"
+            )
+        if not snapshot.data.items and snapshot.spec.optional:
+            continue
+        label = addon.getLocalizedString(snapshot.spec.label_id)
+        listitem = xbmcgui.ListItem(label=label)
+        if snapshot.data.items:
+            art = snapshot.data.items[0].get("art", {})
+            listitem.setArt({k: v for k, v in art.items() if v})
+        url = context.build_url(action="list", rail=snapshot.spec.identifier)
+        xbmcplugin.addDirectoryItem(context.handle, url, listitem, isFolder=True)
 
-def _render_search(context: PluginContext) -> None:
-    addon = _addon()
-    label = addon.getLocalizedString(20050)
-    listitem = xbmcgui.ListItem(label=label)
-    listitem.setArt({"icon": "DefaultAddonsSearch.png"})
-    xbmcplugin.addDirectoryItem(
-        context.handle,
-        context.build_url(action="search"),
-        listitem,
-        True,
-    )
-
-
-def _render_diagnostics(context: PluginContext) -> None:
-    addon = _addon()
-    label = addon.getLocalizedString(21040)
-    listitem = xbmcgui.ListItem(label=label)
-    listitem.setProperty("SpecialSort", "bottom")
-    xbmcplugin.addDirectoryItem(
-        context.handle,
-        context.build_url(action="diagnostics"),
-        listitem,
-        True,
-    )
-
-
-def detect_media_type(item: Dict[str, str]) -> str:
-    media_type = item.get("type")
-    if media_type:
-        return media_type
-    duration = item.get("duration")
-    if duration and isinstance(duration, int) and duration > 3600:
-        return "movie"
-    return "episode"
-
-
-def _is_cold_run(instrumentation: List[Dict[str, Any]]) -> bool:
-    return any(not entry.get("cached") for entry in instrumentation)
-
-
-def clear_home_cache() -> None:
-    cache = get_cache()
-    cache.clear_all()
-
-
-def collect_home_metrics(force_refresh: bool = False) -> List[Dict[str, Any]]:
-    metrics: List[Dict[str, Any]] = []
-    for rail in HOME_RAILS:
-        _, rail_metrics = _load_rail_data(rail, force_refresh=force_refresh)
-        metrics.append(rail_metrics)
-    return metrics
-
-
-def _load_rail_data(rail: RailDefinition, force_refresh: bool = False) -> Tuple[Dict[str, Any], Dict[str, float]]:
-    addon = _addon()
-    backend = get_backend()
-    cache = get_cache()
-    ttl_setting = addon.getSettingInt("cache_ttl") or CACHE_DEFAULT_TTL
-    use_cache = addon.getSettingBool("use_cache") and not force_refresh
-    cache_key = f"{CACHE_PREFIX}{rail.identifier}"
-
-    start = time.perf_counter()
-    cached = cache.get(cache_key, ttl_setting) if use_cache else None
-    used_cache = cached is not None
-    if used_cache:
-        data = cached[0]
-    else:
-        page = backend.fetch_rail(rail.identifier, limit=rail.limit)
-        data = {
-            "items": page.items,
-            "next_token": page.next_token,
-        }
-        if addon.getSettingBool("use_cache"):
-            cache.set(cache_key, data, ttl_setting)
-    duration_ms = (time.perf_counter() - start) * 1000.0
-    metrics = {"rail": rail.identifier, "duration": duration_ms, "cached": used_cache}
-    return data, metrics
+    search_label = addon.getLocalizedString(SEARCH_LABEL_ID)
+    search_item = xbmcgui.ListItem(label=search_label)
+    search_item.setArt({"icon": "DefaultAddonsSearch.png", "thumb": "DefaultAddonsSearch.png"})
+    search_url = context.build_url(action="search")
+    xbmcplugin.addDirectoryItem(context.handle, search_url, search_item, isFolder=True)

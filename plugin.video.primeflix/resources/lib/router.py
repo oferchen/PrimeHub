@@ -66,7 +66,9 @@ def dispatch(base_url: str, param_string: str) -> None:
     elif action == "diagnostics":
         diagnostics.show_results(context)
     elif action == "search":
-        listing.show_search(context)
+        query = params.get("query")
+        cursor = params.get("cursor")
+        listing.show_search(context, query, cursor)
     else:
         home.show_home(context)
 
