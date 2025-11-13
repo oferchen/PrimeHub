@@ -1,0 +1,142 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: PrimeFlix 1.0.0\n"
+"Language: en_GB\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#10000"
+msgid "General"
+msgstr "General"
+
+msgctxt "#10010"
+msgid "Preferred region"
+msgstr "Preferred region"
+
+msgctxt "#10011"
+msgid "United States"
+msgstr "United States"
+
+msgctxt "#10012"
+msgid "United Kingdom"
+msgstr "United Kingdom"
+
+msgctxt "#10013"
+msgid "Germany"
+msgstr "Germany"
+
+msgctxt "#10014"
+msgid "Japan"
+msgstr "Japan"
+
+msgctxt "#10020"
+msgid "Max resolution"
+msgstr "Max resolution"
+
+msgctxt "#10021"
+msgid "Auto"
+msgstr "Auto"
+
+msgctxt "#10022"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "#10023"
+msgid "720p"
+msgstr "720p"
+
+msgctxt "#10030"
+msgid "Use cache"
+msgstr "Use cache"
+
+msgctxt "#10040"
+msgid "Cache TTL (seconds)"
+msgstr "Cache TTL (seconds)"
+
+msgctxt "#10050"
+msgid "Enable performance logging"
+msgstr "Enable performance logging"
+
+msgctxt "#20000"
+msgid "Continue Watching"
+msgstr "Continue Watching"
+
+msgctxt "#20010"
+msgid "Prime Originals"
+msgstr "Prime Originals"
+
+msgctxt "#20020"
+msgid "Movies"
+msgstr "Movies"
+
+msgctxt "#20030"
+msgid "TV"
+msgstr "TV"
+
+msgctxt "#20040"
+msgid "Recommended For You"
+msgstr "Recommended For You"
+
+msgctxt "#20050"
+msgid "Search"
+msgstr "Search"
+
+msgctxt "#20060"
+msgid "More..."
+msgstr "More..."
+
+msgctxt "#21000"
+msgid "Prime backend not available or DRM component missing — open the Amazon VOD add-on, log in, then retry."
+msgstr "Prime backend not available or DRM component missing — open the Amazon VOD add-on, log in, then retry."
+
+msgctxt "#21010"
+msgid "Unable to start playback."
+msgstr "Unable to start playback."
+
+msgctxt "#21020"
+msgid "Enter search query"
+msgstr "Enter search query"
+
+msgctxt "#21030"
+msgid "No results"
+msgstr "No results"
+
+msgctxt "#21040"
+msgid "Diagnostics"
+msgstr "Diagnostics"
+
+msgctxt "#21050"
+msgid "Backend strategy: {strategy} (addon: {addon})"
+msgstr "Backend strategy: {strategy} (addon: {addon})"
+
+msgctxt "#21060"
+msgid "Run {index}: {duration} ms ({state})"
+msgstr "Run {index}: {duration} ms ({state})"
+
+msgctxt "#21070"
+msgid "{rail} rail: {duration} ms ({state})"
+msgstr "{rail} rail: {duration} ms ({state})"
+
+msgctxt "#21080"
+msgid "Search Prime Video"
+msgstr "Search Prime Video"
+
+msgctxt "#21090"
+msgid "Backend add-on missing"
+msgstr "Backend add-on missing"
+
+msgctxt "#21100"
+msgid "inputstream.adaptive add-on missing"
+msgstr "inputstream.adaptive add-on missing"
+
+msgctxt "#21110"
+msgid "Preferred region={preferred}, backend region={backend} — using backend."
+msgstr "Preferred region={preferred}, backend region={backend} — using backend."
+
+msgctxt "#21120"
+msgid "Prime Video Diagnostics"
+msgstr "Prime Video Diagnostics"
+
+msgctxt "#21130"
+msgid "[SLOW] {rail} rail: {duration} ms ({state})"
+msgstr "[SLOW] {rail} rail: {duration} ms ({state})"

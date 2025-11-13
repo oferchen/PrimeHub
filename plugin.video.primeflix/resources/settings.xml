@@ -1,0 +1,9 @@
+<settings version="1">
+    <category label="10000">
+        <setting id="region" type="enum" label="10010" lvalues="10011|10012|10013|10014" default="0"/>
+        <setting id="max_resolution" type="enum" label="10020" lvalues="10021|10022|10023" default="0"/>
+        <setting id="use_cache" type="bool" label="10030" default="true"/>
+        <setting id="cache_ttl" type="number" label="10040" default="300"/>
+        <setting id="perf_logging" type="bool" label="10050" default="false"/>
+    </category>
+</settings>
