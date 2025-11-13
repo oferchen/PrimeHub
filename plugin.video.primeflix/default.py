@@ -4,9 +4,9 @@ from resources.lib.router import dispatch
 
 
 def main():
-    base_url = sys.argv[0]
-    param_string = sys.argv[2] if len(sys.argv) > 2 else ""
-    dispatch(base_url, param_string)
+    handle = sys.argv[0]
+    params = sys.argv[2] if len(sys.argv) > 2 else ""
+    dispatch(handle, params)
 
 
 if __name__ == "__main__":
