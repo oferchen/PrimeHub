@@ -1,1 +1,1 @@
-"""PrimeFlix library package."""
+"""PrimeFlix shared library."""

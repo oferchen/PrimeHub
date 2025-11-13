@@ -1,56 +1,61 @@
+"""Performance utilities for logging execution time."""
+from __future__ import annotations
+
 import functools
 import time
-from collections import defaultdict
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
-try:
+try:  # pragma: no cover - Kodi runtime
     import xbmc
-except ImportError:  # pragma: no cover - development fallback
-    xbmc = None
+except ImportError:  # pragma: no cover - local dev fallback
+    class _XBMCStub:
+        LOGDEBUG = 0
+        LOGINFO = 1
+        LOGWARNING = 2
+        LOGERROR = 3
 
-_LOG_LEVEL_INFO = 1
-_LOG_LEVEL_WARNING = 2
+        @staticmethod
+        def log(message: str, level: int = 0) -> None:
+            print(f"[xbmc:{level}] {message}")
 
-_records = defaultdict(list)
-
-
-def _log(message, level=_LOG_LEVEL_INFO):
-    if xbmc:
-        xbmc.log(message, level)
-    else:  # pragma: no cover - development fallback
-        print(f"[xbmc][{level}] {message}")
+    xbmc = _XBMCStub()  # type: ignore
 
 
-def timed(label, warn_threshold_ms=None):
-    """Decorator that measures execution time and logs the result."""
+LOG_PREFIX = "[PrimeFlix]"
 
-    def decorator(func):
+
+def _log(level: int, message: str) -> None:
+    xbmc.log(f"{LOG_PREFIX} {message}", level)
+
+
+def timed(label: str, warn_threshold_ms: Optional[float] = None) -> Callable:
+    """Decorate *func* so that runtime is logged with *label*."""
+
+    def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            return measure(label, func, warn_threshold_ms, *args, **kwargs)
+            start = time.perf_counter()
+            _log(xbmc.LOGDEBUG, f"{label} started")
+            result = func(*args, **kwargs)
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            level = xbmc.LOGDEBUG
+            if warn_threshold_ms is not None and elapsed_ms > warn_threshold_ms:
+                level = xbmc.LOGWARNING
+            _log(level, f"{label} finished in {elapsed_ms:.2f} ms")
+            return result
 
         return wrapper
 
     return decorator
 
 
-def measure(label: str, func: Callable[..., Any], warn_threshold_ms: Optional[float] = None, *args, **kwargs):
-    start = time.perf_counter()
-    _log(f"[PrimeFlix] START {label}")
-    try:
-        return func(*args, **kwargs)
-    finally:
-        duration = (time.perf_counter() - start) * 1000.0
-        _records[label].append(duration)
-        if warn_threshold_ms and duration > warn_threshold_ms:
-            _log(f"[PrimeFlix] WARNING {label} took {duration:.1f} ms", _LOG_LEVEL_WARNING)
-        else:
-            _log(f"[PrimeFlix] END {label}: {duration:.1f} ms")
+def log_warning(message: str) -> None:
+    _log(xbmc.LOGWARNING, message)
 
 
-def get_records():
-    return {label: list(values) for label, values in _records.items()}
+def log_info(message: str) -> None:
+    _log(xbmc.LOGINFO, message)
 
 
-def clear_records():
-    _records.clear()
+def log_debug(message: str) -> None:
+    _log(xbmc.LOGDEBUG, message)

@@ -1,75 +1,106 @@
+"""Playback handoff to Kodi from PrimeFlix."""
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
-try:
+try:  # pragma: no cover - Kodi runtime
     import xbmc
+    import xbmcaddon
     import xbmcgui
     import xbmcplugin
-except ImportError:  # pragma: no cover - development fallback
-    xbmc = None
-    xbmcgui = None
-    xbmcplugin = None
+except ImportError:  # pragma: no cover - local dev fallback
+    class _XBMC:
+        LOGWARNING = 2
 
-from ..perf import measure
-from ..backend import prime_api
+        @staticmethod
+        def log(message: str, level: int = 0) -> None:
+            print(f"[xbmc:{level}] {message}")
 
-PLAYBACK_WARN_MS = 500
+    class _Addon:
+        def getLocalizedString(self, code: int) -> str:
+            return str(code)
+
+    class _GUI:
+        class Dialog:
+            @staticmethod
+            def notification(title: str, message: str, icon: str = "", time: int = 5000) -> None:
+                print(f"NOTIFY {title}: {message}")
+
+        class ListItem:
+            def __init__(self, label: str = "", path: str = ""):
+                self.label = label
+                self.path = path
+
+            def setProperty(self, key: str, value: str) -> None:
+                pass
+
+            def setInfo(self, info_type: str, info_labels: Dict[str, str]) -> None:
+                pass
+
+            def setMimeType(self, mimetype: str) -> None:
+                pass
+
+            def setContentLookup(self, enable: bool) -> None:
+                pass
+
+    class _Plugin:
+        @staticmethod
+        def setResolvedUrl(handle, succeeded, listitem):
+            print(f"RESOLVED {succeeded} -> {getattr(listitem, 'path', '')}")
+
+    xbmc = _XBMC()  # type: ignore
+    xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
+    xbmcgui = _GUI  # type: ignore
+    xbmcplugin = _Plugin()  # type: ignore
+
+from ..backend.prime_api import get_backend
+from ..perf import log_warning, timed
+from ..preflight import ensure_ready_or_raise
+from ..router import PluginContext
 
 
-def play(handle: int, asin: Optional[str]) -> None:
-    if not asin:
-        return
-    backend = prime_api.get_backend()
-    if not backend or not xbmcgui or not xbmcplugin:
-        return
+@timed("playback.handoff", warn_threshold_ms=500)
+def play(context: PluginContext, asin: str) -> None:
+    addon = xbmcaddon.Addon()
+    ensure_ready_or_raise()
+    backend = get_backend()
     try:
-        playback_data = measure(f"playback:{asin}", backend.get_playable, PLAYBACK_WARN_MS, asin)
-    except Exception as exc:
-        _notify(str(exc))
-        _log(f"[PrimeFlix] Playback error for {asin}: {exc}", level=xbmc.LOGERROR if xbmc else 4)  # type: ignore[attr-defined]
+        payload = backend.get_playable(asin)
+    except Exception as exc:  # pragma: no cover - runtime error path
+        message = addon.getLocalizedString(21010)
+        xbmcgui.Dialog().notification(addon.getAddonInfo("name"), f"{message}: {exc}")
+        log_warning(f"Failed to retrieve playback data for {asin}: {exc}")
         return
 
-    url = playback_data.get("url") or playback_data.get("stream") or playback_data.get("manifest")
-    if not url:
-        _notify("Missing stream URL")
+    stream_url = payload.get("url") or payload.get("stream_url")
+    if not stream_url:
+        log_warning(f"Backend returned no stream URL for {asin}")
+        xbmcgui.Dialog().notification(addon.getAddonInfo("name"), addon.getLocalizedString(21010))
         return
 
-    listitem = xbmcgui.ListItem(path=url)
-    listitem.setProperty("IsPlayable", "true")
+    listitem = xbmcgui.ListItem(path=stream_url)
     listitem.setProperty("inputstream", "inputstream.adaptive")
-
-    headers = playback_data.get("headers") or {}
+    listitem.setProperty("inputstream.adaptive.manifest_type", payload.get("manifest_type", "mpd"))
+    license_key = payload.get("license_key")
+    if license_key:
+        listitem.setProperty("inputstream.adaptive.license_key", license_key)
+    license_type = payload.get("license_type")
+    if license_type:
+        listitem.setProperty("inputstream.adaptive.license_type", license_type)
+    headers = payload.get("headers") or {}
     if headers:
-        header_string = "&".join(f"{key}={value}" for key, value in headers.items())
-        listitem.setProperty("inputstream.adaptive.stream_headers", header_string)
+        header_string = "&".join(f"{k}={v}" for k, v in headers.items())
+        listitem.setProperty("inputstream.adaptive.manifest_headers", header_string)
+    stream_headers = payload.get("stream_headers") or {}
+    if stream_headers:
+        stream_header_string = "&".join(f"{k}={v}" for k, v in stream_headers.items())
+        listitem.setProperty("inputstream.adaptive.stream_headers", stream_header_string)
+    mime_type = payload.get("mime_type")
+    if mime_type:
+        listitem.setMimeType(mime_type)
+    listitem.setContentLookup(False)
+    metadata = payload.get("info") or {}
+    if metadata:
+        listitem.setInfo("video", metadata)
 
-    inputstream_props: Dict[str, str] = playback_data.get("inputstream", {})
-    for key, value in inputstream_props.items():
-        listitem.setProperty(f"inputstream.adaptive.{key}", str(value))
-
-    if playback_data.get("license_key"):
-        listitem.setProperty("inputstream.adaptive.license_key", playback_data["license_key"])
-
-    if playback_data.get("mime_type"):
-        listitem.setMimeType(playback_data["mime_type"])
-
-    info = playback_data.get("info") or {}
-    if info:
-        listitem.setInfo("video", info)
-
-    xbmcplugin.setResolvedUrl(handle, True, listitem)
-
-
-def _notify(message: str) -> None:
-    if xbmcgui:
-        xbmcgui.Dialog().notification("PrimeFlix", message, xbmcgui.NOTIFICATION_ERROR, 5000)
-    else:  # pragma: no cover - development fallback
-        print(f"[PrimeFlix] {message}")
-
-
-def _log(message: str, level: int = xbmc.LOGINFO if xbmc else 1) -> None:  # type: ignore[attr-defined]
-    if xbmc:
-        xbmc.log(message, level)
-    else:  # pragma: no cover - development fallback
-        print(f"[PrimeFlix] {message}")
+    xbmcplugin.setResolvedUrl(context.handle, True, listitem)

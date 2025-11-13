@@ -1,1 +1,1 @@
-"""User interface components for PrimeFlix."""
+"""UI package for PrimeFlix."""

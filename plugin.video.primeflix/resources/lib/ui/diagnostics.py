@@ -1,102 +1,102 @@
+"""Diagnostics route for measuring PrimeFlix performance."""
 from __future__ import annotations
 
-import sys
 import time
-from typing import Dict, List
+from typing import List
 
-try:
-    import xbmc
+try:  # pragma: no cover - Kodi runtime
     import xbmcaddon
     import xbmcgui
     import xbmcplugin
-except ImportError:  # pragma: no cover - development fallback
-    xbmc = None
-    xbmcaddon = None
-    xbmcgui = None
-    xbmcplugin = None
+except ImportError:  # pragma: no cover - local dev fallback
+    class _Addon:
+        def getLocalizedString(self, code: int) -> str:
+            return str(code)
 
-from .. import cache
-from ..perf import clear_records, get_records
-from ..backend import prime_api
+    class _GUI:
+        class ListItem:
+            def __init__(self, label: str = ""):
+                self.label = label
+
+            def setProperty(self, key: str, value: str) -> None:
+                pass
+
+    class _Plugin:
+        @staticmethod
+        def addDirectoryItem(handle, url, listitem, isFolder=False):
+            print(f"ADD {url}: {listitem.label}")
+
+        @staticmethod
+        def setContent(handle, content):
+            print(f"SET CONTENT {content}")
+
+    xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
+    xbmcgui = _GUI  # type: ignore
+    xbmcplugin = _Plugin()  # type: ignore
+
+from ..backend.prime_api import get_backend
+from ..perf import log_info
+from ..preflight import ensure_ready_or_raise
+from ..router import PluginContext
 from . import home
 
+RUNS = 3
 
-def show_results(handle: int) -> None:
-    backend = prime_api.get_backend()
-    if not backend or not xbmcgui or not xbmcplugin:
-        return
 
-    addon = xbmcaddon.Addon() if xbmcaddon else None
-    use_cache = home._get_setting_bool(addon, "use_cache", True)  # type: ignore[attr-defined]
-    cache_ttl = home._get_setting_int(addon, "cache_ttl", home.DEFAULT_CACHE_TTL)  # type: ignore[attr-defined]
+def show_results(context: PluginContext) -> None:
+    addon = xbmcaddon.Addon()
+    ensure_ready_or_raise()
+    backend = get_backend()
+    summary = backend.get_backend_summary()
+    xbmcplugin.setContent(context.handle, "files")
 
-    if use_cache:
-        cache.clear()
+    title_item = xbmcgui.ListItem(label=addon.getLocalizedString(21120))
+    xbmcplugin.addDirectoryItem(context.handle, context.build_url(action="diagnostics"), title_item, False)
 
-    runs: List[Dict] = []
-    for index in range(3):
-        clear_records()
+    header = addon.getLocalizedString(21050).format(
+        strategy=summary.get("strategy", "unknown"), addon=summary.get("id", "n/a")
+    )
+    xbmcplugin.addDirectoryItem(
+        context.handle, context.build_url(action="diagnostics"), xbmcgui.ListItem(label=header), False
+    )
+
+    durations: List[float] = []
+    for index in range(1, RUNS + 1):
+        cold_run = index == 1
+        if cold_run:
+            home.clear_home_cache()
         start = time.perf_counter()
-        _, _ = home.build_home_snapshot(addon, backend, use_cache, cache_ttl)
-        duration = (time.perf_counter() - start) * 1000.0
-        records = get_records()
-        rail_metrics = _extract_rail_metrics(records)
-        run_kind = "cold" if index == 0 else ("warm" if use_cache else "cold")
-        runs.append({
-            "index": index + 1,
-            "duration": duration,
-            "kind": run_kind,
-            "rail_metrics": rail_metrics,
-        })
-
-    xbmcplugin.setContent(handle, "files")
-    xbmcplugin.setPluginCategory(handle, "Diagnostics")
-
-    backend_info = backend.get_backend_info()
-    info_label = f"Backend: {backend_info.get('addon_id')} ({backend_info.get('strategy')})"
-    diagnostics_url = f"{sys.argv[0]}?action=diagnostics"
-    listitem = xbmcgui.ListItem(label=info_label)
-    xbmcplugin.addDirectoryItem(handle, diagnostics_url, listitem, isFolder=False)
-
-    for run in runs:
-        slow = any(metric["slow"] for metric in run["rail_metrics"])
-        label = f"Run {run['index']}: {run['duration']:.1f} ms ({run['kind']})"
-        if slow:
-            label = "[SLOW] " + label
-        plot = _format_metrics(run["rail_metrics"])
-        listitem = xbmcgui.ListItem(label=label)
-        listitem.setInfo("video", {"title": label, "plot": plot})
-        xbmcplugin.addDirectoryItem(handle, diagnostics_url, listitem, isFolder=False)
-
-
-def _extract_rail_metrics(records: Dict[str, List[float]]) -> List[Dict]:
-    metrics = []
-    for label, durations in records.items():
-        if not durations or not label.startswith("rail:"):
-            continue
-        duration = durations[-1]
-        name = label.split(":", 1)[1]
-        if name.endswith(":cache"):
-            threshold = home.RAIL_WARN_WARM_MS
-            kind = "warm"
-            name = name[:-6]
+        metrics = home.collect_home_metrics(force_refresh=cold_run)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        durations.append(duration_ms)
+        state = "cold" if cold_run else "warm"
+        threshold = home.COLD_THRESHOLD_MS if cold_run else home.WARM_THRESHOLD_MS
+        label_id = 21060
+        if duration_ms > threshold:
+            label = addon.getLocalizedString(21130).format(rail="Home", duration=f"{duration_ms:.0f}", state=state)
         else:
-            threshold = home.RAIL_WARN_COLD_MS
-            kind = "cold"
-        slow = duration > threshold
-        metrics.append({
-            "name": name,
-            "duration": duration,
-            "slow": slow,
-            "kind": kind,
-        })
-    metrics.sort(key=lambda item: item["name"])
-    return metrics
+            label = addon.getLocalizedString(label_id).format(index=index, duration=f"{duration_ms:.0f}", state=state)
+        xbmcplugin.addDirectoryItem(
+            context.handle, context.build_url(action="diagnostics"), xbmcgui.ListItem(label=label), False
+        )
+        _emit_rail_metrics(context, metrics, addon, cold_run)
+
+    log_info(
+        "Diagnostics completed: "
+        + ", ".join(f"run {idx + 1}={durations[idx]:.2f}ms" for idx in range(len(durations)))
+    )
 
 
-def _format_metrics(metrics: List[Dict]) -> str:
-    lines = []
-    for metric in metrics:
-        prefix = "[SLOW] " if metric["slow"] else ""
-        lines.append(f"{prefix}{metric['name']} ({metric['kind']}): {metric['duration']:.1f} ms")
-    return "\n".join(lines) if lines else "No rail metrics captured."
+def _emit_rail_metrics(context: PluginContext, metrics: List[dict], addon, cold_run: bool) -> None:
+    for entry in metrics:
+        threshold = home.RAIL_COLD_THRESHOLD_MS if cold_run or not entry.get("cached") else home.RAIL_WARM_THRESHOLD_MS
+        duration = entry.get("duration", 0.0)
+        rail_name = entry.get("rail", "?")
+        state = "cold" if cold_run or not entry.get("cached") else "warm"
+        if duration > threshold:
+            label = addon.getLocalizedString(21130).format(rail=rail_name.title(), duration=f"{duration:.0f}", state=state)
+        else:
+            label = addon.getLocalizedString(21070).format(rail=rail_name.title(), duration=f"{duration:.0f}", state=state)
+        xbmcplugin.addDirectoryItem(
+            context.handle, context.build_url(action="diagnostics"), xbmcgui.ListItem(label=label), False
+        )

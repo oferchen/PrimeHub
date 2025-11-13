@@ -1,14 +1,15 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.primeflix" name="PrimeFlix" version="1.0.0" provider-name="PrimeFlix Team">
     <requires>
-        <import addon="xbmc.python" version="3.0.0" />
+        <import addon="xbmc.python" version="3.0.0"/>
+        <import addon="script.module.future" version="0.0.0" optional="true"/>
     </requires>
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">Netflix-style interface for Amazon Prime Video.</summary>
-        <description lang="en_GB">PrimeFlix wraps an installed Prime Video add-on and provides a fast, fluent home experience inspired by Netflix. Widevine, DRM, and account handling are delegated to the backend add-on.</description>
-        <platform>all</platform>
-    </extension>
     <extension point="xbmc.python.pluginsource" library="default.py">
         <provides>video</provides>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Netflix-style frontend for Amazon Prime Video</summary>
+        <description lang="en_GB">PrimeFlix reuses the official Amazon Prime Video Kodi backend while providing a fast, fluent Netflix-inspired interface.</description>
+        <platform>all</platform>
     </extension>
 </addon>

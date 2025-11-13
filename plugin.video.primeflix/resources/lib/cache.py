@@ -1,122 +1,145 @@
+"""Simple TTL cache backed by JSON files."""
+from __future__ import annotations
+
 import json
 import os
+import threading
 import time
-from contextlib import suppress
+from hashlib import sha1
+from typing import Any, Optional, Tuple
 
-try:
-    import xbmc
-    import xbmcaddon
+try:  # pragma: no cover - Kodi runtime
     import xbmcvfs
-except ImportError:  # pragma: no cover - development fallback
-    xbmc = None
-    xbmcaddon = None
-    xbmcvfs = None
+    import xbmcaddon
+except ImportError:  # pragma: no cover - local dev fallback
+    class _VFSStub:
+        def exists(self, path: str) -> bool:
+            return os.path.exists(path)
 
-
-class JSONCache:
-    """Simple TTL JSON cache stored under the add-on profile directory."""
-
-    def __init__(self):
-        self._addon_id = None
-        self._base_dir = None
-        self._ensure_dirs()
-
-    def _ensure_dirs(self):
-        addon_id = self._addon_id or self._get_addon_id()
-        if not addon_id:
-            return
-        path = self._translate_path(f"special://profile/addon_data/{addon_id}/cache")
-        self._base_dir = path
-        if xbmcvfs:
-            if not xbmcvfs.exists(path):
-                xbmcvfs.mkdirs(path)
-        else:  # pragma: no cover - development fallback
+        def mkdirs(self, path: str) -> None:
             os.makedirs(path, exist_ok=True)
 
-    def _get_addon_id(self):
-        if self._addon_id:
-            return self._addon_id
-        if xbmcaddon:
-            self._addon_id = xbmcaddon.Addon().getAddonInfo("id")
-        else:  # pragma: no cover - development fallback
-            self._addon_id = "plugin.video.primeflix"
-        return self._addon_id
+        def translatePath(self, path: str) -> str:
+            return path
 
-    def _translate_path(self, path):
-        if xbmcvfs:
-            return xbmcvfs.translatePath(path)
-        if xbmc:  # pragma: no cover - legacy fallback
-            return xbmc.translatePath(path)
-        return os.path.expandvars(path.replace("special://profile", os.path.join(os.path.expanduser("~"), ".kodi")))
+        def delete(self, path: str) -> None:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
 
-    def _file_path(self, key):
-        if not self._base_dir:
-            self._ensure_dirs()
-        safe_key = key.replace("/", "_")
-        return os.path.join(self._base_dir, f"{safe_key}.json")
+        def open(self, path: str, mode: str = "r"):
+            return open(path, mode)
 
-    def get(self, key):
-        path = self._file_path(key)
-        if xbmcvfs and xbmcvfs.exists(path):
-            with suppress(Exception):
-                with xbmcvfs.File(path, "r") as fh:  # type: ignore[attr-defined]
-                    raw = fh.read()
-                data = json.loads(raw)
-                if data.get("expires", 0) > time.time():
-                    return data.get("value")
+    class _AddonStub:
+        def getAddonInfo(self, key: str) -> str:
+            if key == "id":
+                return "plugin.video.primeflix"
+            if key == "profile":
+                return os.path.join(os.getcwd(), "profile")
+            if key == "path":
+                return os.getcwd()
+            raise KeyError(key)
+
+    xbmcvfs = _VFSStub()  # type: ignore
+    xbmcaddon = type("addon", (), {"Addon": lambda *args, **kwargs: _AddonStub()})  # type: ignore
+
+
+class Cache:
+    """Thread-safe TTL cache stored inside Kodi profile."""
+
+    def __init__(self) -> None:
+        addon = xbmcaddon.Addon()
+        addon_profile = addon.getAddonInfo("profile")
+        base_path = addon_profile
+        translate = getattr(xbmcvfs, "translatePath", None)
+        if callable(translate):
+            base_path = translate(addon_profile)
+        base_path = os.path.join(base_path, "cache")
+        if not xbmcvfs.exists(base_path):
+            xbmcvfs.mkdirs(base_path)
+        self._base_path = base_path
+        self._lock = threading.Lock()
+
+    def _filepath(self, key: str) -> str:
+        digest = sha1(key.encode("utf-8")).hexdigest()
+        return os.path.join(self._base_path, f"{digest}.json")
+
+    def get(self, key: str, ttl_seconds: Optional[int] = None) -> Optional[Tuple[Any, float]]:
+        path = self._filepath(key)
+        if not xbmcvfs.exists(path):
+            return None
+        with self._lock:
+            try:
+                with xbmcvfs.open(path, "r") as stream:  # type: ignore[arg-type]
+                    payload = json.load(stream)
+            except Exception:
                 self.delete(key)
-        elif os.path.exists(path):  # pragma: no cover - development fallback
-            with open(path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            if data.get("expires", 0) > time.time():
-                return data.get("value")
+                return None
+        timestamp = payload.get("timestamp", 0)
+        if ttl_seconds is not None and (time.time() - timestamp) > ttl_seconds:
             self.delete(key)
-        return None
+            return None
+        return payload.get("data"), timestamp
 
-    def set(self, key, value, ttl_seconds=300):
-        if ttl_seconds <= 0:
-            self.delete(key)
+    def set(self, key: str, data: Any, ttl_seconds: int) -> None:
+        path = self._filepath(key)
+        payload = {"timestamp": time.time(), "ttl": ttl_seconds, "key": key, "data": data}
+        with self._lock:
+            with xbmcvfs.open(path, "w") as stream:  # type: ignore[arg-type]
+                json.dump(payload, stream)
+
+    def delete(self, key: str) -> None:
+        path = self._filepath(key)
+        if xbmcvfs.exists(path):
+            try:
+                xbmcvfs.delete(path)
+            except AttributeError:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+
+    def clear_prefix(self, prefix: str) -> None:
+        for filename in os.listdir(self._base_path):
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(self._base_path, filename)
+            try:
+                with xbmcvfs.open(path, "r") as stream:  # type: ignore[arg-type]
+                    payload = json.load(stream)
+                key = payload.get("key")
+            except Exception:
+                key = None
+            if key is None or not str(key).startswith(prefix):
+                continue
+            self.delete(str(key))
+
+    def clear_all(self) -> None:
+        if not xbmcvfs.exists(self._base_path):
+            try:
+                xbmcvfs.mkdirs(self._base_path)
+            except AttributeError:
+                os.makedirs(self._base_path, exist_ok=True)
             return
-        payload = {"value": value, "expires": time.time() + ttl_seconds}
-        path = self._file_path(key)
-        if xbmcvfs:
-            with xbmcvfs.File(path, "w") as fh:  # type: ignore[attr-defined]
-                fh.write(json.dumps(payload))
-        else:  # pragma: no cover - development fallback
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-
-    def delete(self, key):
-        path = self._file_path(key)
-        if xbmcvfs and xbmcvfs.exists(path):
-            xbmcvfs.delete(path)
-        elif os.path.exists(path):  # pragma: no cover - development fallback
-            os.remove(path)
-
-    def clear(self):
-        if not self._base_dir:
-            self._ensure_dirs()
-        if not self._base_dir:
-            return
-        if xbmcvfs:
-            dirs, files = xbmcvfs.listdir(self._base_dir)
-            for file_name in files:
-                xbmcvfs.delete(os.path.join(self._base_dir, file_name))
-        else:  # pragma: no cover - development fallback
-            for file_name in os.listdir(self._base_dir):
-                os.remove(os.path.join(self._base_dir, file_name))
+        for filename in os.listdir(self._base_path):
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(self._base_path, filename)
+            try:
+                xbmcvfs.delete(path)
+            except AttributeError:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    continue
 
 
-CACHE = JSONCache()
+_cache_instance: Optional[Cache] = None
 
 
-def get(key):
-    return CACHE.get(key)
-
-
-def set(key, value, ttl_seconds=300):
-    CACHE.set(key, value, ttl_seconds)
-
-
-def clear():
-    CACHE.clear()
+def get_cache() -> Cache:
+    global _cache_instance
+    if _cache_instance is None:
+        _cache_instance = Cache()
+    return _cache_instance

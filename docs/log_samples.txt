@@ -1,0 +1,3 @@
+[PrimeFlix] Prime backend ready using direct strategy (plugin.video.amazon-test)
+[PrimeFlix] home.show_home finished in 1285.42 ms
+[PrimeFlix] movies rail exceeded target 612.37 ms (threshold 500 ms)

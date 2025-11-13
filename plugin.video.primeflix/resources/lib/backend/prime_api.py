@@ -1,319 +1,476 @@
+"""Integration with existing Amazon Prime Video Kodi add-ons."""
 from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
-import urllib.parse
+import threading
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-try:
+try:  # pragma: no cover - Kodi runtime
     import xbmc
     import xbmcaddon
-except ImportError:  # pragma: no cover - development fallback
-    xbmc = None
-    xbmcaddon = None
+except ImportError:  # pragma: no cover - local dev fallback
+    class _XBMC:
+        LOGDEBUG = 0
+        LOGINFO = 1
+        LOGWARNING = 2
+        LOGERROR = 3
 
+        @staticmethod
+        def log(message: str, level: int = 0) -> None:
+            print(f"[xbmc:{level}] {message}")
 
-_LOG_INFO = 1
-_LOG_WARNING = 2
-_LOG_ERROR = 4
+        @staticmethod
+        def executeJSONRPC(payload: str) -> str:
+            return json.dumps({"result": {}})
 
-POSSIBLE_ADDONS = [
-    "plugin.video.amazon-test",
-    "plugin.video.amazonvod",
-    "plugin.video.primevideo",
-    "plugin.video.amazonprime",
-    "plugin.video.amazon"
-]
+        @staticmethod
+        def getCondVisibility(expression: str) -> bool:
+            return False
 
-DIRECT_MODULE_CANDIDATES = [
+    class _Addon:
+        def __init__(self, addon_id: Optional[str] = None):
+            self._id = addon_id or "plugin.video.primeflix"
+
+        def getAddonInfo(self, key: str) -> str:
+            mapping = {
+                "id": self._id,
+                "name": "PrimeFlix",
+                "path": os.getcwd(),
+            }
+            return mapping.get(key, "")
+
+        def getSettingString(self, key: str) -> str:
+            return ""
+
+        def getSettingBool(self, key: str) -> bool:
+            return False
+
+        def getSettingInt(self, key: str) -> int:
+            return 0
+
+    xbmc = _XBMC()  # type: ignore
+    xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
+
+from ..perf import log_debug, log_info, log_warning
+from ..preflight import ensure_ready_or_raise
+
+# Candidate module names for direct import strategy
+DIRECT_MODULE_CANDIDATES = (
+    "amazon_prime",
+    "prime_video",
+    "primevideo",
+    "resources.lib.amazon_prime",
+    "resources.lib.prime_video",
     "resources.lib.api",
-    "resources.lib.prime_api",
-    "resources.lib.navigation",
-    "resources.lib.main"
-]
+)
+
+DIRECT_CLASS_CANDIDATES = (
+    "PrimeVideo",
+    "PrimeVideoApi",
+    "PrimeVideoAPI",
+    "PrimeApi",
+    "PrimeAPI",
+    "Navigation",
+)
+
+# Fallback plugin routes for indirect strategy
+INDIRECT_RAIL_LABELS = {
+    "continue": ("Continue Watching", "watchlist"),
+    "originals": ("Prime Originals", "prime-originals"),
+    "movies": ("Movies", "movies"),
+    "tv": ("TV", "tv"),
+    "recommended": ("Recommended", "recommended"),
+}
+
+INDIRECT_SEARCH_ROUTE = "search"
+
+
+class BackendNotAvailableError(RuntimeError):
+    """Raised when no backend implementation can be resolved."""
 
 
 @dataclass
-class Rail:
-    identifier: str
-    title: str
+class RailPage:
     items: List[Dict[str, Any]]
-    content_type: str = "videos"
+    next_token: Optional[str]
 
 
 class PrimeBackend:
-    """Encapsulates communication with the Prime Video backend add-on."""
+    """Facade exposing operations required by the PrimeFlix UI."""
 
-    def __init__(self):
-        self.strategy: Optional[str] = None
-        self.addon_id: Optional[str] = None
-        self._direct_module: Optional[Any] = None
-        self._region: Optional[str] = None
-        self._detect_backend()
+    def __init__(self) -> None:
+        self._addon = xbmcaddon.Addon()
+        self._backend_id: Optional[str] = None
+        self._strategy: Optional[str] = None
+        self._adapter: Optional[_BaseAdapter] = None
+        self._lock = threading.RLock()
 
-    # region detection --------------------------------------------------
-    def _detect_backend(self) -> None:
-        for addon_id in POSSIBLE_ADDONS:
-            module = self._try_direct_bind(addon_id)
-            if module:
-                self.strategy = "direct"
-                self.addon_id = addon_id
-                self._direct_module = module
-                self._log(f"[PrimeFlix] Using direct backend strategy with {addon_id}")
+    def ensure_initialized(self) -> None:
+        if self._adapter:
+            return
+        with self._lock:
+            if self._adapter:
                 return
-        for addon_id in POSSIBLE_ADDONS:
-            if self._check_addon_exists(addon_id):
-                self.strategy = "indirect"
-                self.addon_id = addon_id
-                self._log(f"[PrimeFlix] Using indirect backend strategy with {addon_id}")
-                return
-        self._log("[PrimeFlix] No compatible Prime backend found", _LOG_ERROR)
+            backend_id = ensure_ready_or_raise()
+            adapter = self._create_adapter(backend_id)
+            self._backend_id = backend_id
+            self._adapter = adapter
+            log_info(f"Prime backend ready using {self._strategy} strategy ({backend_id})")
 
-    def _check_addon_exists(self, addon_id: str) -> bool:
-        if not xbmcaddon:
-            return False
+    def _create_adapter(self, backend_id: str) -> "_BaseAdapter":
+        errors: List[str] = []
+        # Direct import strategy
         try:
-            xbmcaddon.Addon(addon_id)
-            return True
-        except Exception:
-            return False
+            adapter = _DirectAdapter(backend_id)
+            adapter.ping()
+            self._strategy = "direct"
+            return adapter
+        except Exception as exc:
+            errors.append(f"direct: {exc}")
+            log_debug(f"Direct adapter failed for {backend_id}: {exc}")
 
-    def _try_direct_bind(self, addon_id: str):
-        if not xbmcaddon:
-            return None
+        # Indirect strategy
         try:
-            addon = xbmcaddon.Addon(addon_id)
-        except Exception:
-            return None
-        path = addon.getAddonInfo("path")
-        if path and path not in sys.path:
-            sys.path.append(path)
+            adapter = _IndirectAdapter(backend_id)
+            adapter.ping()
+            self._strategy = "indirect"
+            return adapter
+        except Exception as exc:
+            errors.append(f"indirect: {exc}")
+            log_debug(f"Indirect adapter failed for {backend_id}: {exc}")
+
+        raise BackendNotAvailableError("; ".join(errors))
+
+    @property
+    def strategy(self) -> str:
+        self.ensure_initialized()
+        return self._strategy or "unknown"
+
+    @property
+    def backend_id(self) -> Optional[str]:
+        self.ensure_initialized()
+        return self._backend_id
+
+    def fetch_rail(self, rail_id: str, limit: int = 25, cursor: Optional[str] = None) -> RailPage:
+        self.ensure_initialized()
+        assert self._adapter is not None
+        return self._adapter.fetch_rail(rail_id, limit, cursor)
+
+    def search(self, query: str, limit: int = 30) -> List[Dict[str, Any]]:
+        self.ensure_initialized()
+        assert self._adapter is not None
+        return self._adapter.search(query, limit)
+
+    def get_playable(self, asin: str) -> Dict[str, Any]:
+        self.ensure_initialized()
+        assert self._adapter is not None
+        return self._adapter.get_playable(asin)
+
+    def get_region(self) -> Optional[str]:
+        self.ensure_initialized()
+        assert self._adapter is not None
+        return self._adapter.get_region()
+
+    def get_backend_summary(self) -> Dict[str, Any]:
+        self.ensure_initialized()
+        return {
+            "id": self._backend_id,
+            "strategy": self._strategy,
+        }
+
+
+class _BaseAdapter:
+    def __init__(self, addon_id: str) -> None:
+        self.addon_id = addon_id
+
+    def ping(self) -> None:
+        raise NotImplementedError
+
+    def fetch_rail(self, rail_id: str, limit: int, cursor: Optional[str]) -> RailPage:
+        raise NotImplementedError
+
+    def search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def get_playable(self, asin: str) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def get_region(self) -> Optional[str]:
+        return None
+
+
+class _DirectAdapter(_BaseAdapter):
+    """Adapter that imports Python modules from the backend add-on."""
+
+    def __init__(self, addon_id: str) -> None:
+        super().__init__(addon_id)
+        self._api: Optional[Any] = None
+        self._module: Optional[ModuleType] = None
+        self._discover()
+
+    def _discover(self) -> None:
+        addon = xbmcaddon.Addon(self.addon_id)
+        addon_path = addon.getAddonInfo("path")
+        search_paths = [addon_path, os.path.join(addon_path, "resources", "lib")]
+        for path in search_paths:
+            if path and path not in sys.path:
+                sys.path.insert(0, path)
+        errors: List[str] = []
         for module_name in DIRECT_MODULE_CANDIDATES:
             try:
                 module = importlib.import_module(module_name)
-            except ImportError:
+            except Exception as exc:
+                errors.append(f"{module_name}: {exc}")
                 continue
-            if self._module_has_api(module):
-                return module
+            api = self._locate_api_object(module)
+            if api is not None:
+                self._module = module
+                self._api = api
+                log_debug(f"Direct backend module resolved: {module_name}")
+                return
+        raise BackendNotAvailableError(" | ".join(errors))
+
+    def _locate_api_object(self, module: ModuleType) -> Optional[Any]:
+        for attribute in DIRECT_CLASS_CANDIDATES:
+            api_candidate = getattr(module, attribute, None)
+            if api_candidate is None:
+                continue
+            try:
+                instance = api_candidate() if callable(api_candidate) else api_candidate
+            except Exception:
+                continue
+            if self._has_required_capabilities(instance):
+                return instance
+        # Fall back to module-level functions
+        if self._has_required_capabilities(module):
+            return module
         return None
 
     @staticmethod
-    def _module_has_api(module: Any) -> bool:
-        for attr in ("get_home_rails", "get_home", "home", "PrimeVideoAPI"):
-            if hasattr(module, attr):
-                return True
-        return False
+    def _has_required_capabilities(obj: Any) -> bool:
+        has_rail = any(hasattr(obj, name) for name in ("get_rail", "get_section", "get_menu"))
+        has_playable = any(hasattr(obj, name) for name in ("get_playable", "play", "get_stream"))
+        if not (has_rail and has_playable):
+            return False
+        if not any(hasattr(obj, name) for name in ("search", "find", "search_titles")):
+            log_warning("Backend API missing optional capability search")
+        return True
 
-    # logging ------------------------------------------------------------
-    def _log(self, message: str, level: int = _LOG_INFO) -> None:
-        if xbmc:
-            xbmc.log(message, level)
-        else:  # pragma: no cover - development fallback
-            print(f"[xbmc][{level}] {message}")
+    def _ensure_api(self) -> Any:
+        if self._api is None:
+            raise BackendNotAvailableError("Direct API unavailable")
+        return self._api
 
-    # interface ----------------------------------------------------------
-    @property
-    def is_ready(self) -> bool:
-        return bool(self.addon_id and self.strategy)
+    def ping(self) -> None:
+        self._ensure_api()
 
-    def get_backend_info(self) -> Dict[str, Any]:
-        return {
-            "strategy": self.strategy or "unknown",
-            "addon_id": self.addon_id,
-            "region": self.get_region()
-        }
+    def fetch_rail(self, rail_id: str, limit: int, cursor: Optional[str]) -> RailPage:
+        api = self._ensure_api()
+        data = self._invoke(api, ("get_rail", "get_section", "get_menu"), rail_id=rail_id, limit=limit, cursor=cursor)
+        return self._normalize_listing(data)
 
-    def get_region(self) -> Optional[str]:
-        if self._region:
-            return self._region
-        if self.strategy == "direct" and self._direct_module:
-            self._region = self._call_direct(("get_region", "region"))
-        elif self.strategy == "indirect" and self.addon_id:
-            self._region = self._call_indirect("region")
-        return self._region
-
-    def get_home_rails(self) -> List[Rail]:
-        raw = None
-        if self.strategy == "direct" and self._direct_module:
-            raw = self._call_direct(("get_home_rails", "get_home", "home"))
-        elif self.strategy == "indirect" and self.addon_id:
-            raw = self._call_indirect("home")
-        rails = self._normalize_rails(raw)
-        return rails
-
-    def get_rail_items(self, rail_id: str, page: int = 1) -> Tuple[List[Dict[str, Any]], bool]:
-        raw = None
-        if self.strategy == "direct" and self._direct_module:
-            raw = self._call_direct(("get_rail_items", "list_rail", "get_menu_items"), rail_id, page)
-        elif self.strategy == "indirect" and self.addon_id:
-            raw = self._call_indirect("list", rail=rail_id, page=page)
-        items, has_more = self._normalize_items(raw)
-        return items, has_more
-
-    def search(self, query: str, page: int = 1) -> Tuple[List[Dict[str, Any]], bool]:
-        raw = None
-        if self.strategy == "direct" and self._direct_module:
-            raw = self._call_direct(("search", "find"), query, page)
-        elif self.strategy == "indirect" and self.addon_id:
-            raw = self._call_indirect("search", query=query, page=page)
-        items, has_more = self._normalize_items(raw)
-        return items, has_more
+    def search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        api = self._ensure_api()
+        results = self._invoke(api, ("search", "find", "search_titles"), query=query, limit=limit)
+        return [self._normalize_item(item) for item in results]
 
     def get_playable(self, asin: str) -> Dict[str, Any]:
-        if self.strategy == "direct" and self._direct_module:
-            raw = self._call_direct(("get_playable", "play", "get_playback_info"), asin)
-        elif self.strategy == "indirect" and self.addon_id:
-            raw = self._call_indirect("play", asin=asin)
-        else:
-            raise RuntimeError("Prime backend not ready")
-        return self._normalize_playback(raw)
+        api = self._ensure_api()
+        playable = self._invoke(api, ("get_playable", "play", "get_stream"), asin)
+        return playable
 
-    # direct strategy helpers --------------------------------------------
-    def _call_direct(self, names: Iterable[str], *args: Any) -> Any:
-        if not self._direct_module:
-            raise RuntimeError("Direct backend missing")
-        module = self._direct_module
-        # object based API
-        api_obj = None
-        for attr in ("PrimeVideoAPI", "API", "PrimeApi"):
-            if hasattr(module, attr):
-                factory = getattr(module, attr)
-                api_obj = factory() if callable(factory) else factory
-                break
-        for name in names:
-            func = None
-            if api_obj and hasattr(api_obj, name):
-                func = getattr(api_obj, name)
-            elif hasattr(module, name):
-                func = getattr(module, name)
-            if callable(func):
-                return func(*args)
-        raise RuntimeError(f"Direct backend method not found for {names}")
+    def get_region(self) -> Optional[str]:
+        api = self._ensure_api()
+        region = getattr(api, "get_region", None)
+        if callable(region):
+            try:
+                return region()
+            except Exception:
+                return None
+        return getattr(api, "region", None)
 
-    # indirect strategy helpers ------------------------------------------
-    def _call_indirect(self, action: str, **params: Any) -> Any:
-        if not xbmc or not self.addon_id:
-            raise RuntimeError("Indirect backend not available")
-        plugin_params = {"action": action}
-        plugin_params.update({k: v for k, v in params.items() if v is not None})
-        plugin_url = f"plugin://{self.addon_id}/?{urllib.parse.urlencode(plugin_params)}"
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "Files.GetDirectory",
-            "params": {"directory": plugin_url, "media": "video", "properties": [
-                "title",
-                "file",
-                "plot",
-                "art",
-                "streamdetails",
-                "resume"
-            ]}
-        }
-        response = xbmc.executeJSONRPC(json.dumps(payload))
-        data = json.loads(response)
-        if "error" in data:
-            raise RuntimeError(str(data["error"]))
-        result = data.get("result", {})
-        if action == "play":
-            # Addons.ExecuteAddon to retrieve playback info
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "Addons.ExecuteAddon",
-                "params": {"addonid": self.addon_id, "params": plugin_params}
-            }
-            response = xbmc.executeJSONRPC(json.dumps(payload))
-            playback_data = json.loads(response)
-            if "error" in playback_data:
-                raise RuntimeError(str(playback_data["error"]))
-            return playback_data.get("result")
-        return result
-
-    # normalization ------------------------------------------------------
-    def _normalize_rails(self, raw: Any) -> List[Rail]:
-        rails: List[Rail] = []
-        if isinstance(raw, dict):
-            candidates = raw.get("rails") or raw.get("items") or raw.get("children")
-        else:
-            candidates = raw
-        if isinstance(candidates, list):
-            for entry in candidates:
-                if not isinstance(entry, dict):
-                    continue
-                identifier = entry.get("id") or entry.get("slug") or entry.get("title") or entry.get("name")
-                if not identifier:
-                    continue
-                title = entry.get("title") or entry.get("name") or identifier
-                items = entry.get("items") or entry.get("contents") or entry.get("children") or []
-                content_type = entry.get("content_type") or entry.get("type") or "videos"
-                rails.append(Rail(str(identifier), title, items, content_type))
-        return rails
-
-    def _normalize_items(self, raw: Any) -> Tuple[List[Dict[str, Any]], bool]:
+    def _normalize_listing(self, data: Any) -> RailPage:
         items: List[Dict[str, Any]] = []
-        has_more = False
-        data = None
-        if isinstance(raw, dict):
-            data = raw.get("items") or raw.get("videos") or raw.get("entries") or raw.get("files")
-            has_more = bool(raw.get("has_more") or raw.get("next_page"))
-        elif isinstance(raw, list):
-            data = raw
-        if isinstance(data, list):
-            for entry in data:
-                normalized = self._normalize_item(entry)
-                if normalized:
-                    items.append(normalized)
-        return items, has_more
+        next_token: Optional[str] = None
+        if isinstance(data, dict):
+            items = [self._normalize_item(it) for it in data.get("items", [])]
+            next_token = data.get("next") or data.get("next_token")
+        elif isinstance(data, (list, tuple)):
+            items = [self._normalize_item(it) for it in data]
+        return RailPage(items, next_token)
 
-    def _normalize_item(self, entry: Any) -> Optional[Dict[str, Any]]:
-        if not isinstance(entry, dict):
-            return None
-        asin = entry.get("asin") or entry.get("id") or entry.get("contentId") or entry.get("url")
-        label = entry.get("title") or entry.get("label") or entry.get("name")
-        if not asin or not label:
-            return None
-        art = entry.get("art") or {
-            "thumb": entry.get("thumb"),
-            "poster": entry.get("poster"),
-            "fanart": entry.get("fanart")
-        }
-        info = entry.get("info") or {
-            "title": label,
-            "plot": entry.get("plot") or entry.get("description") or "",
+    def _normalize_item(self, item: Any) -> Dict[str, Any]:
+        if isinstance(item, dict):
+            return item
+        mapping = {}
+        for attr in ("asin", "title", "plot", "year", "genre", "genres", "duration", "image", "thumb", "poster", "fanart", "type"):
+            if hasattr(item, attr):
+                mapping[attr] = getattr(item, attr)
+        return mapping
+
+    @staticmethod
+    def _invoke(api: Any, method_names: Iterable[str], *args, **kwargs) -> Any:
+        for name in method_names:
+            method = getattr(api, name, None)
+            if callable(method):
+                return method(*args, **kwargs)
+        raise BackendNotAvailableError(f"Backend API missing methods {', '.join(method_names)}")
+
+
+class _IndirectAdapter(_BaseAdapter):
+    """Adapter that interacts with the backend through plugin URLs and JSON-RPC."""
+
+    def __init__(self, addon_id: str) -> None:
+        super().__init__(addon_id)
+        self._home_cache: Dict[str, str] = {}
+
+    def ping(self) -> None:
+        # Fetch root directory to confirm backend is responsive
+        self._refresh_home_routes()
+
+    def _refresh_home_routes(self) -> None:
+        result = self._get_directory(f"plugin://{self.addon_id}/")
+        files = result.get("files", []) if result else []
+        mapping = {}
+        for entry in files:
+            label = entry.get("label", "").lower()
+            url = entry.get("file")
+            if not url:
+                continue
+            mapping[label] = url
+        self._home_cache = mapping
+
+    def fetch_rail(self, rail_id: str, limit: int, cursor: Optional[str]) -> RailPage:
+        label_hint, route_hint = INDIRECT_RAIL_LABELS.get(rail_id, (rail_id, rail_id))
+        target_url = self._resolve_rail_url(label_hint.lower(), route_hint)
+        if cursor:
+            delimiter = "&" if "?" in target_url else "?"
+            target_url = f"{target_url}{delimiter}cursor={cursor}"
+        payload = self._get_directory(target_url)
+        items = [self._convert_entry(entry) for entry in payload.get("files", [])]
+        next_token = payload.get("limits", {}).get("next")
+        return RailPage(items, next_token)
+
+    def search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        url = f"plugin://{self.addon_id}/?action={INDIRECT_SEARCH_ROUTE}&term={query}"
+        payload = self._get_directory(url)
+        files = payload.get("files", [])
+        return [self._convert_entry(entry) for entry in files[:limit]]
+
+    def get_playable(self, asin: str) -> Dict[str, Any]:
+        url = f"plugin://{self.addon_id}/?action=play&asin={asin}&output=json"
+        response = xbmc.executeJSONRPC(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "Addons.ExecuteAddon",
+                    "params": {
+                        "addonid": self.addon_id,
+                        "params": {"action": "play", "asin": asin, "output": "json"},
+                    },
+                    "id": 1,
+                }
+            )
+        )
+        data = json.loads(response)
+        result = data.get("result")
+        if isinstance(result, dict):
+            details = result.get("details")
+            if isinstance(details, dict):
+                return details
+            if any(key in result for key in ("url", "stream_url", "license_key")):
+                return result
+        raise BackendNotAvailableError("Unable to retrieve playable stream from backend")
+
+    def get_region(self) -> Optional[str]:
+        response = xbmc.executeJSONRPC(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "Addons.ExecuteAddon",
+                    "params": {
+                        "addonid": self.addon_id,
+                        "params": {"action": "region"},
+                    },
+                    "id": 1,
+                }
+            )
+        )
+        data = json.loads(response)
+        if isinstance(data.get("result"), dict):
+            return data["result"].get("region")
+        return None
+
+    def _get_directory(self, plugin_url: str) -> Dict[str, Any]:
+        response = xbmc.executeJSONRPC(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "Files.GetDirectory",
+                    "params": {
+                        "directory": plugin_url,
+                        "media": "files",
+                        "properties": [
+                            "title",
+                            "art",
+                            "streamdetails",
+                            "file",
+                            "mimetype",
+                            "showtitle",
+                            "season",
+                            "episode",
+                            "fanart",
+                            "thumbnail",
+                            "dateadded",
+                        ],
+                    },
+                    "id": 1,
+                }
+            )
+        )
+        data = json.loads(response)
+        return data.get("result", {})
+
+    def _resolve_rail_url(self, label_hint: str, route_hint: str) -> str:
+        if not self._home_cache:
+            self._refresh_home_routes()
+        for label, url in self._home_cache.items():
+            if label_hint in label:
+                return url
+        return f"plugin://{self.addon_id}/?action={route_hint}"
+
+    def _convert_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "title": entry.get("label") or entry.get("title"),
+            "asin": self._extract_asin(entry.get("file", "")),
+            "plot": entry.get("plot"),
             "year": entry.get("year"),
+            "duration": entry.get("runtime"),
             "genre": entry.get("genre"),
-            "duration": entry.get("duration")
+            "thumb": entry.get("thumbnail") or entry.get("art", {}).get("thumb"),
+            "poster": entry.get("art", {}).get("poster"),
+            "fanart": entry.get("art", {}).get("fanart"),
+            "type": entry.get("type"),
         }
-        item_type = entry.get("type") or entry.get("media_type") or "video"
-        is_folder = bool(entry.get("is_folder"))
-        return {
-            "asin": str(asin),
-            "title": label,
-            "art": {k: v for k, v in art.items() if v},
-            "info": info,
-            "is_folder": is_folder,
-            "type": item_type,
-            "params": entry.get("params") or {}
-        }
+        return info
 
-    def _normalize_playback(self, raw: Any) -> Dict[str, Any]:
-        if isinstance(raw, dict):
-            return raw
-        raise RuntimeError("Invalid playback payload")
+    @staticmethod
+    def _extract_asin(url: str) -> Optional[str]:
+        if "asin=" in url:
+            return url.split("asin=")[-1].split("&")[0]
+        return None
 
 
-_backend: Optional[PrimeBackend] = None
+_backend_instance: Optional[PrimeBackend] = None
 
 
-def get_backend() -> Optional[PrimeBackend]:
-    global _backend
-    if _backend is None:
-        backend = PrimeBackend()
-        if backend.is_ready:
-            _backend = backend
-        else:
-            _backend = None
-    return _backend
+def get_backend() -> PrimeBackend:
+    global _backend_instance
+    if _backend_instance is None:
+        _backend_instance = PrimeBackend()
+    return _backend_instance

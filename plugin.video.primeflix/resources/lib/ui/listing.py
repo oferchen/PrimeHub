@@ -1,151 +1,116 @@
+"""Listing screens for PrimeFlix rails and search."""
 from __future__ import annotations
 
-import sys
-import urllib.parse
-from typing import Dict, List, Optional
+from typing import Optional
 
-try:
-    import xbmc
+try:  # pragma: no cover - Kodi runtime
     import xbmcaddon
     import xbmcgui
     import xbmcplugin
-except ImportError:  # pragma: no cover - development fallback
-    xbmc = None
-    xbmcaddon = None
-    xbmcgui = None
-    xbmcplugin = None
+except ImportError:  # pragma: no cover - local dev fallback
+    class _Addon:
+        def getLocalizedString(self, code: int) -> str:
+            return str(code)
 
-from .. import cache
-from ..perf import measure
-from ..backend import prime_api
+    class _GUI:
+        class Dialog:
+            @staticmethod
+            def input(title: str) -> str:
+                return ""
+
+        class ListItem:
+            def __init__(self, label: str = ""):
+                self.label = label
+
+            def setArt(self, art):
+                pass
+
+            def setInfo(self, info_type, info_labels):
+                pass
+
+            def setProperty(self, key, value):
+                pass
+
+    class _Plugin:
+        @staticmethod
+        def addDirectoryItems(handle, items):
+            for url, listitem, folder in items:
+                print(f"ADD {url} ({'folder' if folder else 'item'})")
+
+        @staticmethod
+        def addDirectoryItem(handle, url, listitem, isFolder=False):
+            print(f"ADD {url}")
+
+        @staticmethod
+        def setContent(handle, content):
+            print(f"SET CONTENT {content}")
+
+    xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
+    xbmcgui = _GUI  # type: ignore
+    xbmcplugin = _Plugin()  # type: ignore
+
+from ..backend.prime_api import get_backend
+from ..router import PluginContext
 from . import home
 
-SEARCH_TTL = 60
+
+def show_list(context: PluginContext, rail_id: str, cursor: Optional[str]) -> None:
+    addon = xbmcaddon.Addon()
+    xbmcplugin.setContent(context.handle, rail.content_type)
+    backend = get_backend()
+    rail = next((r for r in home.HOME_RAILS if r.identifier == rail_id), None)
+    if rail is None:
+        rail = home.RailDefinition(rail_id, 20020, "videos")
+    page = backend.fetch_rail(rail_id, limit=rail.limit, cursor=cursor)
+    items = [_build_video_item(context, entry) for entry in page.items]
+    if page.next_token:
+        label = addon.getLocalizedString(20060)
+        listitem = xbmcgui.ListItem(label=f"{addon.getLocalizedString(rail.label_id)} · {label}")
+        url = context.build_url(action="list", rail=rail_id, cursor=page.next_token)
+        items.append((url, listitem, True))
+    if items:
+        xbmcplugin.addDirectoryItems(context.handle, items)
 
 
-def show_list(handle: int, rail_id: str | None, page: int) -> None:
-    if not rail_id:
-        return
-    backend = prime_api.get_backend()
-    if not backend:
-        return
-    addon = xbmcaddon.Addon() if xbmcaddon else None
-    use_cache = home._get_setting_bool(addon, "use_cache", True)  # type: ignore[attr-defined]
-    cache_ttl = home._get_setting_int(addon, "cache_ttl", home.DEFAULT_CACHE_TTL)  # type: ignore[attr-defined]
-
-    items, has_more, from_cache = home.get_rail_page(rail_id, page, use_cache, cache_ttl)
-    _log_fetch(rail_id, page, from_cache)
-
-    if xbmcplugin:
-        xbmcplugin.setContent(handle, _content_type(items))
-
-    for item in items:
-        _add_item(handle, item)
-
-    if has_more:
-        _add_more_item(handle, rail_id, page)
-
-
-def start_search(handle: int, params: Optional[Dict[str, str]]) -> None:
-    query = params.get("query") if params else None
-    page = int(params.get("page", "1")) if params and params.get("page") else 1
+def show_search(context: PluginContext) -> None:
+    addon = xbmcaddon.Addon()
+    dialog = xbmcgui.Dialog()
+    query = dialog.input(addon.getLocalizedString(21020))
     if not query:
-        if not xbmcgui:
-            return
-        query = xbmcgui.Dialog().input("Prime Video")
-        if not query:
-            return
-        page = 1
-    _show_search_results(handle, query, page)
-
-
-def _show_search_results(handle: int, query: str, page: int) -> None:
-    backend = prime_api.get_backend()
-    if not backend:
         return
-    cache_key = f"search:{query}:{page}"
-    cached = cache.get(cache_key)
-    if cached:
-        items, has_more = cached.get("items", []), bool(cached.get("has_more"))
-        from_cache = True
-    else:
-        def fetch():
-            return backend.search(query, page)
-
-        items, has_more = measure(f"search:{page}", fetch, 500)
-        cache.set(cache_key, {"items": items, "has_more": has_more}, ttl_seconds=SEARCH_TTL)
-        from_cache = False
-    _log_fetch(f"search:{query}", page, from_cache)
-
-    if xbmcplugin:
-        xbmcplugin.setPluginCategory(handle, f"Search: {query}")
-        xbmcplugin.setContent(handle, _content_type(items))
-
-    for item in items:
-        _add_item(handle, item)
-
-    if has_more:
-        params = {"action": "search", "query": query, "page": page + 1}
-        url = f"{sys.argv[0]}?{urllib.parse.urlencode(params)}"
-        label = f"More results ({page + 1})"
-        listitem = xbmcgui.ListItem(label=label) if xbmcgui else None
-        if xbmcplugin and listitem:
-            xbmcplugin.addDirectoryItem(handle, url, listitem, isFolder=True)
-
-
-def _add_item(handle: int, item: Dict) -> None:
-    if not xbmcgui or not xbmcplugin:
+    xbmcplugin.setContent(context.handle, "videos")
+    backend = get_backend()
+    results = backend.search(query, limit=30)
+    if not results:
+        listitem = xbmcgui.ListItem(label=addon.getLocalizedString(21030))
+        xbmcplugin.addDirectoryItem(context.handle, context.build_url(), listitem, False)
         return
-    label = item.get("title") or item.get("name")
-    listitem = xbmcgui.ListItem(label=label)
-    art = item.get("art") or {}
-    if art:
-        listitem.setArt({k: v for k, v in art.items() if v})
-    info = item.get("info") or {}
-    info.setdefault("title", label)
-    media_type = item.get("type") or info.get("mediatype")
-    if media_type:
-        info.setdefault("mediatype", media_type)
-    listitem.setInfo("video", info)
-
-    if item.get("is_folder"):
-        params = {"action": "list", "rail": item.get("params", {}).get("rail", item.get("asin"))}
-        url = f"{sys.argv[0]}?{urllib.parse.urlencode(params)}"
-        xbmcplugin.addDirectoryItem(handle, url, listitem, isFolder=True)
-    else:
-        asin = item.get("asin")
-        if asin:
-            params = {"action": "play", "asin": asin}
-            url = f"{sys.argv[0]}?{urllib.parse.urlencode(params)}"
-            listitem.setProperty("IsPlayable", "true")
-            xbmcplugin.addDirectoryItem(handle, url, listitem, isFolder=False)
+    items = [_build_video_item(context, entry) for entry in results]
+    if items:
+        xbmcplugin.addDirectoryItems(context.handle, items)
 
 
-def _add_more_item(handle: int, rail_id: str, page: int) -> None:
-    if not xbmcgui or not xbmcplugin:
-        return
-    params = {"action": "list", "rail": rail_id, "page": page + 1}
-    url = f"{sys.argv[0]}?{urllib.parse.urlencode(params)}"
-    label = f"More… ({page + 1})"
-    listitem = xbmcgui.ListItem(label=label)
-    xbmcplugin.addDirectoryItem(handle, url, listitem, isFolder=True)
-
-
-def _content_type(items: List[Dict]) -> str:
-    if not items:
-        return "videos"
-    types = {item.get("type") for item in items if item.get("type")}
-    if types == {"movie"}:
-        return "movies"
-    if types == {"episode"} or types == {"tvshow"}:
-        return "tvshows"
-    return "videos"
-
-
-def _log_fetch(identifier: str, page: int, from_cache: bool) -> None:
-    source = "cache" if from_cache else "backend"
-    level = xbmc.LOGINFO if xbmc else 1  # type: ignore[attr-defined]
-    if xbmc:
-        xbmc.log(f"[PrimeFlix] Rail {identifier} page {page} served from {source}", level)
-    else:  # pragma: no cover - development fallback
-        print(f"[PrimeFlix] Rail {identifier} page {page} served from {source}")
+def _build_video_item(context: PluginContext, entry: dict) -> tuple:
+    listitem = xbmcgui.ListItem(label=entry.get("title", ""))
+    art = {
+        "thumb": entry.get("thumb") or entry.get("poster"),
+        "poster": entry.get("poster") or entry.get("thumb"),
+        "fanart": entry.get("fanart"),
+    }
+    listitem.setArt({k: v for k, v in art.items() if v})
+    genre_value = entry.get("genre")
+    if isinstance(entry.get("genres"), list):
+        genre_value = ", ".join(entry.get("genres"))
+    info_labels = {
+        "title": entry.get("title"),
+        "plot": entry.get("plot"),
+        "year": entry.get("year"),
+        "duration": entry.get("duration"),
+        "genre": genre_value,
+        "mediatype": home.detect_media_type(entry),
+    }
+    listitem.setInfo("video", {k: v for k, v in info_labels.items() if v})
+    listitem.setProperty("IsPlayable", "true")
+    asin = entry.get("asin")
+    url = context.build_url(action="play", asin=asin) if asin else context.build_url()
+    return (url, listitem, False)
