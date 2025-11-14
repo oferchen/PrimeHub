@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcaddon = type("addon", (), {"Addon": _AddonStub})  # type: ignore
 
 from ..cache import get_cache
-from ..perf import log_debug, log_info
+from ..perf import log_debug, log_info, timed
 from ..preflight import ensure_ready_or_raise
 
 
@@ -445,6 +445,9 @@ def _normalize_video(item: Any) -> Optional[Dict[str, Any]]:
     return normalized
 
 
+RAIL_COLD_THRESHOLD_MS = 500.0
+
+
 class PrimeAPI:
     """Facade exposing backend data retrieval with caching."""
 
@@ -509,6 +512,7 @@ class PrimeAPI:
                 return value.lower() == "true"
             return default
 
+    @timed("PrimeAPI.get_rail", warn_threshold_ms=RAIL_COLD_THRESHOLD_MS)
     def get_rail(self, rail_id: str, cursor: Optional[str], limit: int, ttl: int, use_cache: bool, force_refresh: bool = False) -> Tuple[RailData, bool]:
         cache_key = f"rail::{rail_id}::{cursor or 'root'}"
         if not force_refresh and use_cache:
@@ -526,6 +530,7 @@ class PrimeAPI:
             self._cache.set(cache_key, {"items": data.items, "cursor": data.cursor}, ttl)
         return data, False
 
+    @timed("PrimeAPI.search", warn_threshold_ms=RAIL_COLD_THRESHOLD_MS)
     def search(self, query: str, cursor: Optional[str], limit: int, ttl: int, use_cache: bool) -> Tuple[RailData, bool]:
         cache_key = f"search::{query.lower()}::{cursor or 'root'}"
         if use_cache:

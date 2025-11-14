@@ -86,7 +86,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcplugin = _Plugin()  # type: ignore
 
 from ..backend.prime_api import BackendError, RailData, get_backend
-from ..perf import log_info, log_warning
+from ..perf import log_info, log_warning, timed
 from ..preflight import PreflightError
 
 HOME_COLD_THRESHOLD_MS = 1500.0
@@ -154,6 +154,7 @@ def _notify_error(title: str, message: str) -> None:
         log_warning(message)
 
 
+@timed("Home snapshot build", warn_threshold_ms=HOME_COLD_THRESHOLD_MS)
 def build_home_snapshot(backend, use_cache: bool, ttl: int, force_refresh: bool = False) -> Tuple[List[RailSnapshot], dict]:
     rail_snapshots: List[RailSnapshot] = []
     total_start = time.perf_counter()
@@ -178,6 +179,7 @@ def build_home_snapshot(backend, use_cache: bool, ttl: int, force_refresh: bool 
     return rail_snapshots, metrics
 
 
+@timed("Home route", warn_threshold_ms=HOME_COLD_THRESHOLD_MS)
 def show_home(context) -> None:
     addon = xbmcaddon.Addon()
     try:
