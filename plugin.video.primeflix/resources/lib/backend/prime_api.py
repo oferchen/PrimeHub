@@ -1,6 +1,10 @@
-"""Prime backend adapter with dual-strategy binding."""
-from __future__ import annotations
+"""Prime backend facade with automatic strategy selection for callers.
 
+This module is invoked by UI layers (home, listing, playback, diagnostics)
+through :func:`get_backend`, providing normalized data from the installed
+Prime Video backend via direct imports or JSON-RPC fallback.
+"""
+from __future__ import annotations
 import importlib
 import inspect
 import json
