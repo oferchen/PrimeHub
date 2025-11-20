@@ -571,13 +571,10 @@ class PrimeAPI:
         if not force_refresh and use_cache:
             cached = self._cache.get(cache_key, ttl_seconds=ttl)
             if cached:
-                payload, _timestamp = cached
-                if isinstance(payload, dict) and "items" in payload:
-                    data = RailData(payload["items"], payload.get("cursor"))
-                else:
-                    data = RailData(payload, None) if isinstance(payload, list) else None
-                if data is not None:
-                    return data, True
+                if isinstance(cached, dict) and "items" in cached:
+                    return RailData(cached["items"], cached.get("cursor")), True
+                if isinstance(cached, list):
+                    return RailData(cached, None), True
         data = self._strategy.get_rail(rail_id, cursor, limit)
         if use_cache:
             self._cache.set(cache_key, {"items": data.items, "cursor": data.cursor}, ttl)
@@ -589,9 +586,10 @@ class PrimeAPI:
         if use_cache:
             cached = self._cache.get(cache_key, ttl_seconds=ttl)
             if cached:
-                payload, _timestamp = cached
-                if isinstance(payload, dict) and "items" in payload:
-                    return RailData(payload["items"], payload.get("cursor")), True
+                if isinstance(cached, dict) and "items" in cached:
+                    return RailData(cached["items"], cached.get("cursor")), True
+                if isinstance(cached, list):
+                    return RailData(cached, None), True
         data = self._strategy.search(query, cursor, limit)
         if use_cache:
             self._cache.set(cache_key, {"items": data.items, "cursor": data.cursor}, ttl)

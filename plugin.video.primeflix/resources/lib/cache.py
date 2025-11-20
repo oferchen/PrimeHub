@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from hashlib import sha1
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 try:  # pragma: no cover - Kodi runtime
     import xbmcvfs
@@ -65,7 +65,15 @@ class Cache:
         digest = sha1(key.encode("utf-8")).hexdigest()
         return os.path.join(self._base_path, f"{digest}.json")
 
-    def get(self, key: str, ttl_seconds: Optional[int] = None) -> Optional[Tuple[Any, float]]:
+    def get(self, key: str, ttl_seconds: Optional[int] = None) -> Optional[Any]:
+        """Return cached data for *key* when still fresh.
+
+        The function first determines the TTL to apply (caller-provided value
+        wins, otherwise the TTL recorded alongside the cached payload). When the
+        entry is stale or cannot be decoded, the cache file is removed and
+        ``None`` is returned.
+        """
+
         path = self._filepath(key)
         if not xbmcvfs.exists(path):
             return None
@@ -76,11 +84,21 @@ class Cache:
             except Exception:
                 self.delete(key)
                 return None
-        timestamp = payload.get("timestamp", 0)
-        if ttl_seconds is not None and (time.time() - timestamp) > ttl_seconds:
+
+        timestamp = float(payload.get("timestamp", 0))
+        ttl_value = ttl_seconds
+        if ttl_value is None:
+            recorded_ttl = payload.get("ttl")
+            try:
+                ttl_value = int(recorded_ttl) if recorded_ttl is not None else None
+            except (TypeError, ValueError):
+                ttl_value = None
+
+        if ttl_value is not None and (time.time() - timestamp) > ttl_value:
             self.delete(key)
             return None
-        return payload.get("data"), timestamp
+
+        return payload.get("data")
 
     def set(self, key: str, data: Any, ttl_seconds: int) -> None:
         path = self._filepath(key)
