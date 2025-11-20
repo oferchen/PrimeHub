@@ -1,8 +1,9 @@
 """Prime backend facade with automatic strategy selection for callers.
 
-This module is invoked by UI layers (home, listing, playback, diagnostics)
-through :func:`get_backend`, providing normalized data from the installed
-Prime Video backend via direct imports or JSON-RPC fallback.
+The facade lazily instantiates a strategy selected via :func:`get_backend`,
+providing normalized data from the installed Prime Video backend via direct
+imports or JSON-RPC fallback. This module is invoked by UI layers (home,
+listing, playback, diagnostics).
 """
 from __future__ import annotations
 import importlib

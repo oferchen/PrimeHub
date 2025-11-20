@@ -1,8 +1,8 @@
 """Playback handoff from Prime backend to Kodi using inputstream.adaptive.
 
-Called by the router for ``action=play`` to resolve a playable URL returned
-by :mod:`resources.lib.backend.prime_api` and configure the list item for
-Kodi's player.
+Called by the router for ``action=play`` to resolve a playable URL returned by
+:mod:`resources.lib.backend.prime_api` and configure the list item for Kodi's
+player.
 """
 from __future__ import annotations
 
