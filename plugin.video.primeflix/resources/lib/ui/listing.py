@@ -106,7 +106,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcplugin = _Plugin()  # type: ignore
 
 from ..backend.prime_api import BackendError, get_backend
-from ..perf import log_info, log_warning
+from ..perf import log_duration, log_warning
 from ..preflight import PreflightError
 from .home import HOME_RAILS, RAIL_COLD_THRESHOLD_MS, RAIL_WARM_THRESHOLD_MS, RailSpec
 
@@ -137,10 +137,6 @@ def _get_setting_bool(addon: Any, setting_id: str, default: bool) -> bool:
         if isinstance(value, str):
             return value.lower() == "true"
         return default
-
-
-def _is_perf_logging_enabled(addon: Any) -> bool:
-    return _get_setting_bool(addon, "perf_logging", False)
 
 
 def _add_video_item(handle: int, context, item: Dict[str, Any]) -> None:
@@ -190,18 +186,16 @@ def show_list(context, rail_id: str, cursor: Optional[str]) -> None:
     ttl = max(30, _get_setting_int(addon, "cache_ttl", 300))
     use_cache = _get_setting_bool(addon, "use_cache", True)
     xbmcplugin.setContent(context.handle, content_type)
-    verbose = _is_perf_logging_enabled(addon)
-
     start = time.perf_counter()
     data, from_cache = backend.get_rail(rail_id, cursor, DEFAULT_LIMIT, ttl, use_cache, force_refresh=False)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
-    threshold = RAIL_WARM_THRESHOLD_MS if from_cache else RAIL_COLD_THRESHOLD_MS
-    if elapsed_ms > threshold:
-        log_warning(
-            f"Rail {rail_id} listing exceeded target ({'warm' if from_cache else 'cold'}): {elapsed_ms:.2f} ms"
-        )
-    elif verbose:
-        log_info(f"Rail {rail_id} listing completed in {elapsed_ms:.2f} ms")
+    log_duration(
+        f"Rail {rail_id} listing",
+        elapsed_ms,
+        warm=from_cache,
+        warm_threshold_ms=RAIL_WARM_THRESHOLD_MS,
+        cold_threshold_ms=RAIL_COLD_THRESHOLD_MS,
+    )
 
     if not data.items:
         _notify(addon, addon.getLocalizedString(NO_RESULTS_ID))
@@ -238,18 +232,16 @@ def show_search(context, query: Optional[str] = None, cursor: Optional[str] = No
 
     use_cache = _get_setting_bool(addon, "use_cache", True)
     xbmcplugin.setContent(context.handle, "videos")
-    verbose = _is_perf_logging_enabled(addon)
-
     start = time.perf_counter()
     data, from_cache = backend.search(query, cursor, DEFAULT_LIMIT, SEARCH_CONTENT_TTL, use_cache)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
-    threshold = RAIL_WARM_THRESHOLD_MS if from_cache else RAIL_COLD_THRESHOLD_MS
-    if elapsed_ms > threshold:
-        log_warning(
-            f"Search '{query}' exceeded target ({'warm' if from_cache else 'cold'}): {elapsed_ms:.2f} ms"
-        )
-    elif verbose:
-        log_info(f"Search '{query}' completed in {elapsed_ms:.2f} ms")
+    log_duration(
+        f"Search '{query}'",
+        elapsed_ms,
+        warm=from_cache,
+        warm_threshold_ms=RAIL_WARM_THRESHOLD_MS,
+        cold_threshold_ms=RAIL_COLD_THRESHOLD_MS,
+    )
 
     if not data.items:
         _notify(addon, addon.getLocalizedString(NO_RESULTS_ID))

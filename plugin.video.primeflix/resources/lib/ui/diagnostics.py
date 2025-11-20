@@ -65,7 +65,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcplugin = _Plugin()  # type: ignore
 
 from ..backend.prime_api import BackendError, get_backend
-from ..perf import log_info, log_warning
+from ..perf import log_duration
 from ..preflight import PreflightError
 from .home import (
     HOME_COLD_THRESHOLD_MS,
@@ -134,7 +134,6 @@ def show_results(context) -> None:
 
     ttl = max(30, _get_setting_int(addon, "cache_ttl", 300))
     use_cache_setting = _get_setting_bool(addon, "use_cache", True)
-    verbose = _get_setting_bool(addon, "perf_logging", False)
     xbmcplugin.setContent(context.handle, "files")
 
     backend_label = addon.getLocalizedString(BACKEND_LABEL_ID) or "Backend"
@@ -152,14 +151,16 @@ def show_results(context) -> None:
         )
         warm = use_cache_setting and all(s.from_cache for s in snapshots)
         total_ms = metrics["total_ms"]
-        threshold = HOME_WARM_THRESHOLD_MS if warm else HOME_COLD_THRESHOLD_MS
         label = _format_run_label(addon, iteration + 1, total_ms, warm)
         run_item = xbmcgui.ListItem(label=label)
         xbmcplugin.addDirectoryItem(context.handle, context.build_url(action="diagnostics"), run_item, isFolder=False)
-        if total_ms > threshold:
-            log_warning(f"Diagnostics run {iteration + 1} exceeded target: {total_ms:.2f} ms")
-        elif verbose:
-            log_info(f"Diagnostics run {iteration + 1}: {total_ms:.2f} ms")
+        log_duration(
+            f"Diagnostics run {iteration + 1}",
+            total_ms,
+            warm=warm,
+            warm_threshold_ms=HOME_WARM_THRESHOLD_MS,
+            cold_threshold_ms=HOME_COLD_THRESHOLD_MS,
+        )
 
         for snapshot in snapshots:
             rail_threshold = RAIL_WARM_THRESHOLD_MS if snapshot.from_cache else RAIL_COLD_THRESHOLD_MS
@@ -172,3 +173,10 @@ def show_results(context) -> None:
                     slow_item,
                     isFolder=False,
                 )
+            log_duration(
+                f"Diagnostics rail {snapshot.spec.identifier} (run {iteration + 1})",
+                snapshot.elapsed_ms,
+                warm=snapshot.from_cache,
+                warm_threshold_ms=RAIL_WARM_THRESHOLD_MS,
+                cold_threshold_ms=RAIL_COLD_THRESHOLD_MS,
+            )

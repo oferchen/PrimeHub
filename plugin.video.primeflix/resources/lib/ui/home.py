@@ -86,7 +86,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcplugin = _Plugin()  # type: ignore
 
 from ..backend.prime_api import BackendError, RailData, get_backend
-from ..perf import log_info, log_warning, timed
+from ..perf import log_duration, log_info, log_warning, timed
 from ..preflight import PreflightError
 
 HOME_COLD_THRESHOLD_MS = 1500.0
@@ -203,24 +203,23 @@ def show_home(context) -> None:
     snapshots, metrics = build_home_snapshot(backend, use_cache=use_cache, ttl=ttl, force_refresh=False)
     total_ms = metrics["total_ms"]
     warm = all(snapshot.from_cache for snapshot in snapshots)
-    threshold = HOME_WARM_THRESHOLD_MS if warm else HOME_COLD_THRESHOLD_MS
-    if total_ms > threshold:
-        log_warning(
-            f"Home build exceeded target ({'warm' if warm else 'cold'}): {total_ms:.2f} ms"
-        )
-    elif verbose:
-        log_info(f"Home build completed in {total_ms:.2f} ms")
+    log_duration(
+        "Home build",
+        total_ms,
+        warm=warm,
+        warm_threshold_ms=HOME_WARM_THRESHOLD_MS,
+        cold_threshold_ms=HOME_COLD_THRESHOLD_MS,
+    )
 
     for snapshot in snapshots:
-        rail_threshold = RAIL_WARM_THRESHOLD_MS if snapshot.from_cache else RAIL_COLD_THRESHOLD_MS
-        if snapshot.elapsed_ms > rail_threshold:
-            log_warning(
-                f"Rail {snapshot.spec.identifier} exceeded target ({'warm' if snapshot.from_cache else 'cold'}): {snapshot.elapsed_ms:.2f} ms"
-            )
-        elif verbose:
-            log_info(
-                f"Rail {snapshot.spec.identifier} ready in {snapshot.elapsed_ms:.2f} ms (items={len(snapshot.data.items)})"
-            )
+        log_duration(
+            f"Rail {snapshot.spec.identifier}",
+            snapshot.elapsed_ms,
+            warm=snapshot.from_cache,
+            warm_threshold_ms=RAIL_WARM_THRESHOLD_MS,
+            cold_threshold_ms=RAIL_COLD_THRESHOLD_MS,
+            details=f"(items={len(snapshot.data.items)})",
+        )
         if not snapshot.data.items and snapshot.spec.optional:
             continue
         label = addon.getLocalizedString(snapshot.spec.label_id)
