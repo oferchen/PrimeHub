@@ -6,7 +6,8 @@ and a search entry.
 """
 from __future__ import annotations
 
-from typing import List, Tuple
+import time
+from typing import Dict, List, Tuple
 
 try:  # pragma: no cover - Kodi runtime
     import xbmcplugin
@@ -51,25 +52,66 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcgui = type("gui", (), {"ListItem": _ListItemStub})  # type: ignore
     xbmcaddon = type("addon", (), {"Addon": lambda *args, **kwargs: _AddonStub()})  # type: ignore
 
-from ..perf import timed
+from ..backend.prime_api import BackendError, HOME_COLD_THRESHOLD_MS, HOME_WARM_THRESHOLD_MS, get_backend
+from ..perf import log_duration, timed
 from ..preflight import ensure_ready_or_raise
 from .listing import RAIL_DEFINITIONS
 
 HOME_CONTENT_TYPE = "videos"
+_RAIL_LABEL_MAP: Dict[str, int] = {str(item["id"]): int(item.get("label", 0)) for item in RAIL_DEFINITIONS}
 
 
-@timed("home_build", warn_threshold_ms=1500.0)
+def _bool_setting(addon: object, key: str, default: bool) -> bool:
+    try:
+        return addon.getSettingBool(key)
+    except Exception:
+        try:
+            return str(addon.getSetting(key)).lower() == "true"
+        except Exception:
+            return default
+
+
+def _int_setting(addon: object, key: str, default: int) -> int:
+    try:
+        return addon.getSettingInt(key)
+    except Exception:
+        try:
+            return int(addon.getSetting(key))
+        except Exception:
+            return default
+
+
+@timed("home_build", warn_threshold_ms=HOME_COLD_THRESHOLD_MS)
 def show_home(context) -> None:
     ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
+    backend = get_backend()
     xbmcplugin.setContent(context.handle, HOME_CONTENT_TYPE)
 
+    ttl = _int_setting(addon, "cache_ttl", 300)
+    use_cache = _bool_setting(addon, "use_cache", True)
+
+    start = time.perf_counter()
+    try:
+        rails, from_cache = backend.get_home_rails(ttl, use_cache)
+    except BackendError as exc:
+        _notify(addon, str(exc))
+        return
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    log_duration(
+        "home",
+        elapsed_ms,
+        warm=from_cache,
+        warm_threshold_ms=HOME_WARM_THRESHOLD_MS,
+        cold_threshold_ms=HOME_COLD_THRESHOLD_MS,
+    )
+
     items: List[Tuple[str, xbmcgui.ListItem, bool]] = []
-    for rail in RAIL_DEFINITIONS:
-        label_id = int(rail.get("label", 0))
-        label = addon.getLocalizedString(label_id) if label_id else str(rail.get("id", ""))
+    for rail in rails:
+        rail_id = str(rail.get("id", ""))
+        label = str(rail.get("title") or _label_for(addon, rail_id))
         listitem = xbmcgui.ListItem(label)
-        url = context.build_url(action="list", rail=str(rail.get("id", "")))
+        url = context.build_url(action="list", rail=rail_id)
         items.append((url, listitem, True))
 
     search_label = addon.getLocalizedString(30020)
@@ -82,3 +124,20 @@ def show_home(context) -> None:
     else:  # pragma: no cover - stub fallback
         for url, listitem, isFolder in items:
             xbmcplugin.addDirectoryItem(context.handle, url, listitem, isFolder=isFolder)
+
+
+def _label_for(addon: object, rail_id: str) -> str:
+    label_id = _RAIL_LABEL_MAP.get(rail_id)
+    if label_id:
+        label = addon.getLocalizedString(label_id)
+        if label:
+            return label
+    return rail_id
+
+
+def _notify(addon: object, message: str) -> None:
+    try:
+        dialog = xbmcgui.Dialog()
+        dialog.notification(addon.getAddonInfo("name"), message)  # type: ignore[attr-defined]
+    except Exception:
+        pass

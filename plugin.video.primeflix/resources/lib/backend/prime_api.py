@@ -96,6 +96,9 @@ class _BaseStrategy:
     def is_drm_ready(self) -> Optional[bool]:  # pragma: no cover - interface
         return None
 
+    def get_home_rails(self) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
     def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
         raise NotImplementedError
 
@@ -283,6 +286,15 @@ class _DirectBackendStrategy(_BaseStrategy):
                 return ready
         return None
 
+    def get_home_rails(self) -> List[Dict[str, Any]]:
+        self._ensure_prepared()
+        try:
+            result = self._invoke(self._home_callable)
+        except TypeError:
+            result = self._invoke(self._home_callable, limit=25)
+        normalized = _normalize_rails(result)
+        return normalized or _default_rails()
+
     def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
         self._ensure_prepared()
         try:
@@ -378,6 +390,17 @@ class _IndirectBackendStrategy(_BaseStrategy):
         if isinstance(region, str):
             return region
         return None
+
+    def get_home_rails(self) -> List[Dict[str, Any]]:
+        for action in ("home", "get_home", "get_home_menu"):
+            try:
+                data = self._execute(action)
+            except BackendError:
+                continue
+            normalized = _normalize_rails(data)
+            if normalized:
+                return normalized
+        return _default_rails()
 
     def is_drm_ready(self) -> Optional[bool]:
         try:
@@ -499,7 +522,46 @@ def _normalize_video(item: Any) -> Optional[Dict[str, Any]]:
     return normalized
 
 
+def _normalize_rails(payload: Any) -> List[Dict[str, Any]]:
+    source = payload
+    if isinstance(payload, dict):
+        rails = payload.get("rails") or payload.get("items") or payload.get("data") or payload
+        source = rails
+    if not isinstance(source, (list, tuple)):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for entry in source:
+        if not isinstance(entry, dict):
+            continue
+        rail_id = entry.get("id") or entry.get("rail_id") or entry.get("slug")
+        title = entry.get("title") or entry.get("name") or rail_id
+        rail_type = entry.get("type") or entry.get("mediatype") or "mixed"
+        if rail_id is None and title is None:
+            continue
+        normalized.append(
+            {
+                "id": str(rail_id or title),
+                "title": str(title or rail_id),
+                "type": str(rail_type or "mixed"),
+            }
+        )
+    return normalized
+
+
+def _default_rails() -> List[Dict[str, str]]:
+    return [
+        {"id": "continue", "title": "Continue Watching", "type": "mixed"},
+        {"id": "originals", "title": "Prime Originals", "type": "mixed"},
+        {"id": "movies", "title": "Movies", "type": "movies"},
+        {"id": "tv", "title": "TV", "type": "tv"},
+        {"id": "recommended", "title": "Recommended For You", "type": "mixed"},
+    ]
+
+
 RAIL_COLD_THRESHOLD_MS = 500.0
+HOME_COLD_THRESHOLD_MS = 1500.0
+HOME_WARM_THRESHOLD_MS = 300.0
 
 
 class PrimeAPI:
@@ -601,6 +663,20 @@ class PrimeAPI:
 
     def is_drm_ready(self) -> Optional[bool]:
         return self._strategy.is_drm_ready()
+
+    @timed("PrimeAPI.get_home", warn_threshold_ms=HOME_COLD_THRESHOLD_MS)
+    def get_home_rails(self, ttl: int, use_cache: bool, force_refresh: bool = False) -> Tuple[List[Dict[str, Any]], bool]:
+        cache_key = "home::rails"
+        if use_cache and not force_refresh:
+            cached = self._cache.get(cache_key, ttl_seconds=ttl)
+            if isinstance(cached, list):
+                normalized = _normalize_rails(cached)
+                if normalized:
+                    return normalized, True
+        rails = self._strategy.get_home_rails()
+        if use_cache:
+            self._cache.set(cache_key, rails, ttl)
+        return rails, False
 
 
 _backend_instance: Optional[PrimeAPI] = None
