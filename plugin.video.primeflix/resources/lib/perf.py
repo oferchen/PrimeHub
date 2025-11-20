@@ -1,9 +1,9 @@
-"""Performance utilities for logging execution time.
+"""Performance utilities for logging execution time across the add-on.
 
-The timing helpers in this module are used by routing and UI layers to keep
-the add-on fast without overwhelming logs. Logging honours the
+Functions here provide the ``@timed`` decorator plus threshold-aware logging
+used by routing, backend bindings, and UI modules. Logging honours the
 ``perf_logging`` setting so users can opt into verbose timing traces while
-always emitting warnings when thresholds are exceeded.
+still emitting warnings when thresholds are exceeded.
 """
 from __future__ import annotations
 
