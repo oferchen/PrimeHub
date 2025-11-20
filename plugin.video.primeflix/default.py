@@ -1,3 +1,8 @@
+"""Kodi entrypoint delegating to the PrimeFlix router.
+
+Kodi invokes this module directly; it forwards the plugin base URL and
+parameters to :func:`resources.lib.router.dispatch`.
+"""
 import sys
 
 from resources.lib.router import dispatch

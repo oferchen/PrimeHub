@@ -1,4 +1,8 @@
-"""Diagnostics view to validate performance."""
+"""Diagnostics route displaying performance runs and backend strategy.
+
+Triggered by the router's ``action=diagnostics`` path to help validate
+preflight readiness, cache warmth, and backend selection for QA.
+"""
 from __future__ import annotations
 
 from typing import Any

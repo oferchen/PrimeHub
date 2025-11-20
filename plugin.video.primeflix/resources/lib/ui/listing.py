@@ -1,4 +1,8 @@
-"""Rail listings and search handling."""
+"""Rail and search listings driven by backend results for router routes.
+
+The router calls :func:`show_list` and :func:`show_search` to render folders
+or playable items returned by :mod:`resources.lib.backend.prime_api`.
+"""
 from __future__ import annotations
 
 import time
