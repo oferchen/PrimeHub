@@ -1,154 +1,119 @@
-"""Playback handoff from Prime backend to Kodi using inputstream.adaptive.
+"""Playback hand-off for PrimeFlix.
 
-Called by the router for ``action=play`` to resolve a playable URL returned by
-:mod:`resources.lib.backend.prime_api` and configure the list item for Kodi's
-player.
+Invoked by :mod:`resources.lib.router` for ``action=play`` URLs. Delegates to
+:mod:`resources.lib.backend.prime_api` to resolve the playable stream and
+instructs Kodi to play it via ``inputstream.adaptive``.
 """
 from __future__ import annotations
 
 from typing import Any, Dict
 
 try:  # pragma: no cover - Kodi runtime
-    import xbmc
-    import xbmcaddon
-    import xbmcgui
     import xbmcplugin
+    import xbmcgui
+    import xbmcaddon
 except ImportError:  # pragma: no cover - local dev fallback
-    class _XBMC:
-        LOGDEBUG = 0
-        LOGINFO = 1
-        LOGWARNING = 2
-        LOGERROR = 3
+    class _PluginStub:
+        handle = 1
 
         @staticmethod
-        def log(message: str, level: int = 0) -> None:
-            print(f"[xbmc:{level}] {message}")
+        def setResolvedUrl(handle, succeeded, listitem):
+            print(f"RESOLVED[{succeeded}]: {getattr(listitem, 'url', '')}")
 
-    class _Addon:
-        def getAddonInfo(self, key: str) -> str:
-            if key == "name":
-                return "PrimeFlix"
-            return ""
+    class _ListItemStub:
+        def __init__(self, label: str):
+            self._label = label
+            self.url = ""
+            self.info: Dict[str, Any] = {}
+            self.properties: Dict[str, str] = {}
+            self.art: Dict[str, str] = {}
 
-    class _Dialog:
+        def setPath(self, path: str):
+            self.url = path
+
+        def setProperty(self, key: str, value: str):
+            self.properties[key] = value
+
+        def setInfo(self, info_type: str, info: Dict[str, Any]):
+            self.info = info
+
+        def setArt(self, art: Dict[str, str]):
+            self.art = art
+
+        def setContentLookup(self, value: bool):
+            pass
+
+        def getLabel(self) -> str:
+            return self._label
+
+    class _AddonStub:
         @staticmethod
-        def notification(title: str, message: str, time: int = 3000) -> None:  # noqa: A003 - Kodi signature
-            print(f"NOTIFY {title}: {message}")
+        def getLocalizedString(code: int) -> str:
+            return str(code)
 
-    class _ListItem:
-        def __init__(self, label: str = "") -> None:
-            self.label = label
-            self._props: Dict[str, str] = {}
-            self._info: Dict[str, Dict[str, Any]] = {}
-            self._art: Dict[str, str] = {}
-            self._path = ""
-
-        def setProperty(self, key: str, value: str) -> None:
-            self._props[key] = value
-
-        def setInfo(self, info_type: str, info: Dict[str, Any]) -> None:
-            self._info[info_type] = info
-
-        def setArt(self, art: Dict[str, str]) -> None:
-            self._art.update({k: v for k, v in art.items() if v})
-
-        def setPath(self, path: str) -> None:
-            self._path = path
-
-        def setContentLookup(self, enabled: bool) -> None:
-            self._props["content_lookup"] = str(enabled)
-
-        def setMimeType(self, mimetype: str) -> None:
-            self._props["mimetype"] = mimetype
-
-    class _Plugin:
-        def __init__(self) -> None:
-            self.handle = 1
-
+    class _DialogStub:
         @staticmethod
-        def setResolvedUrl(handle: int, succeeded: bool, listitem: _ListItem) -> None:
-            print(f"RESOLVE {succeeded} path={listitem._path}")
+        def notification(title: str, message: str, time: int = 3000):
+            print(f"NOTIFY: {title}: {message}")
 
-    xbmc = _XBMC()  # type: ignore
-    xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
-    xbmcgui = type("gui", (), {"Dialog": _Dialog, "ListItem": _ListItem})  # type: ignore
-    xbmcplugin = _Plugin()  # type: ignore
+    xbmcplugin = _PluginStub()  # type: ignore
+    xbmcgui = type("gui", (), {"ListItem": _ListItemStub, "Dialog": _DialogStub})  # type: ignore
+    xbmcaddon = type("addon", (), {"Addon": lambda *args, **kwargs: _AddonStub()})  # type: ignore
 
 from ..backend.prime_api import BackendError, get_backend
-from ..perf import log_warning, timed
-from ..preflight import PreflightError
-
-PLAYBACK_THRESHOLD_MS = 800.0
+from ..perf import timed
+from ..preflight import ensure_ready_or_raise
 
 
-def _notify(message: str) -> None:
-    addon = xbmcaddon.Addon()
-    title = addon.getAddonInfo("name")
-    try:
-        xbmcgui.Dialog().notification(title, message)
-    except Exception:
-        log_warning(message)
-
-
-def _format_headers(headers: Dict[str, Any]) -> str:
-    return "&".join(f"{key}={value}" for key, value in headers.items())
-
-
-@timed("Playback handoff", warn_threshold_ms=PLAYBACK_THRESHOLD_MS)
+@timed("playback_handoff")
 def play(context, asin: str) -> None:
+    ensure_ready_or_raise()
+    backend = get_backend()
+    addon = xbmcaddon.Addon()
     try:
-        backend = get_backend()
-    except (PreflightError, BackendError) as exc:
-        _notify(str(exc))
-        return
-
-    try:
-        payload = backend.get_playable(asin)
+        playback = backend.get_playable(asin)
     except BackendError as exc:
-        _notify(str(exc))
+        _notify(addon, str(exc))
         return
 
-    if not isinstance(payload, dict):
-        _notify("Invalid playback payload")
-        return
+    listitem = xbmcgui.ListItem(playback.get("title") or addon.getAddonInfo("name"))
+    stream_url = playback.get("url") or playback.get("manifest") or playback.get("stream")
+    if isinstance(stream_url, str):
+        listitem.setPath(stream_url)
 
-    url = payload.get("url") or payload.get("manifest") or payload.get("stream")
-    if not url:
-        _notify("Playback URL missing")
-        return
+    _apply_inputstream_properties(listitem, playback)
 
-    listitem = xbmcgui.ListItem(label=payload.get("title", ""))
-    listitem.setPath(url)
-    listitem.setContentLookup(False)
-    listitem.setProperty("inputstream", "inputstream.adaptive")
-    listitem.setProperty("inputstreamaddon", "inputstream.adaptive")
-
-    info = payload.get("info")
+    info = playback.get("info")
     if isinstance(info, dict):
         listitem.setInfo("video", info)
-    art = payload.get("art")
+    art = playback.get("art")
     if isinstance(art, dict):
         listitem.setArt(art)
 
-    mimetype = payload.get("mimetype") or payload.get("mime_type")
-    if isinstance(mimetype, str):
-        listitem.setMimeType(mimetype)
-
-    headers = payload.get("headers") or payload.get("manifest_headers")
-    if isinstance(headers, dict) and headers:
-        header_string = _format_headers(headers)
-        listitem.setProperty("inputstream.adaptive.manifest_headers", header_string)
-        listitem.setProperty("inputstream.adaptive.stream_headers", header_string)
-
-    inputstream_props = payload.get("inputstream") or payload.get("properties")
-    if isinstance(inputstream_props, dict):
-        for key, value in inputstream_props.items():
-            if value is None:
-                continue
-            listitem.setProperty(str(key), str(value))
-
-    license_key = payload.get("license_key")
-    if isinstance(license_key, str):
-        listitem.setProperty("inputstream.adaptive.license_key", license_key)
-
+    listitem.setContentLookup(False)
     xbmcplugin.setResolvedUrl(context.handle, True, listitem)
+
+
+def _apply_inputstream_properties(listitem, playback: Dict[str, Any]) -> None:
+    listitem.setProperty("inputstream", "inputstream.adaptive")
+    manifest_type = playback.get("manifest_type") or playback.get("type") or "mpd"
+    listitem.setProperty("inputstream.adaptive.manifest_type", str(manifest_type))
+    license_key = playback.get("license_key") or playback.get("licenseUrl") or playback.get("license_url")
+    if license_key:
+        listitem.setProperty("inputstream.adaptive.license_key", str(license_key))
+    license_type = playback.get("license_type") or "com.widevine.alpha"
+    listitem.setProperty("inputstream.adaptive.license_type", str(license_type))
+    headers = playback.get("headers") or playback.get("license_headers")
+    if isinstance(headers, dict) and license_key:
+        header_str = "&".join(f"{k}={v}" for k, v in headers.items())
+        listitem.setProperty("inputstream.adaptive.stream_headers", header_str)
+    if playback.get("is_live"):
+        listitem.setProperty("inputstream.adaptive.manifest_update_parameter", "full")
+
+
+def _notify(addon: object, message: str) -> None:
+    try:
+        dialog = xbmcgui.Dialog()
+        dialog.notification(addon.getAddonInfo("name"), message)  # type: ignore[attr-defined]
+    except Exception:
+        pass

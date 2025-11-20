@@ -70,6 +70,10 @@ INPUTSTREAM_ADDON_ID = "inputstream.adaptive"
 class PreflightError(RuntimeError):
     """Raised when the environment is not ready."""
 
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
 
 def _addon_exists(addon_id: str) -> bool:
     try:
@@ -115,17 +119,14 @@ def ensure_ready_or_raise(target_backend: Optional[str] = None) -> str:
     if backend_id is None:
         backend_id = _discover_backend()
     if backend_id is None:
-        _notify_missing("#21090")
-        raise PreflightError("Prime backend missing")
+        raise PreflightError(_get_message("#21090"))
 
     if not _has_inputstream():
-        _notify_missing("#21100")
-        raise PreflightError("inputstream.adaptive missing")
+        raise PreflightError(_get_message("#21100"))
 
     drm_ready = _backend_drm_ready(backend_id)
     if drm_ready is False:
-        _notify_missing("#21110")
-        raise PreflightError("DRM components not ready")
+        raise PreflightError(_get_message("#21110"))
 
     log_info(f"Preflight successful for backend {backend_id}")
     return backend_id
@@ -135,11 +136,26 @@ def _notify_missing(message_id: str) -> None:
     addon = xbmcaddon.Addon()
     dialog = xbmcgui.Dialog()
     title = addon.getAddonInfo("name")
-    message = addon.getLocalizedString(int(message_id.strip("#")))
+    message = _get_message(message_id)
     try:
         dialog.ok(title, message)
     except Exception:
         log_warning(message)
+
+
+def _get_message(message_id: str) -> str:
+    addon = xbmcaddon.Addon()
+    try:
+        return addon.getLocalizedString(int(message_id.strip("#")))
+    except Exception:
+        return message_id
+
+
+def show_preflight_error(error: PreflightError) -> None:
+    """Display a preflight failure in a Kodi-friendly way."""
+
+    message = getattr(error, "message", str(error))
+    _notify_missing(message)
 
 
 def _discover_backend() -> Optional[str]:

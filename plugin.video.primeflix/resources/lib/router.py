@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - local dev fallback
 
     xbmcplugin = _Plugin()  # type: ignore
 
+from .preflight import PreflightError, show_preflight_error
 from .ui import diagnostics, home, listing, playback
 
 
@@ -52,24 +53,29 @@ def dispatch(base_url: str, param_string: str) -> None:
     action = params.get("action")
     context = PluginContext(base_url, handle)
 
-    if not action:
-        home.show_home(context)
-    elif action == "list":
-        rail_id = params.get("rail", "")
-        cursor = params.get("cursor")
-        listing.show_list(context, rail_id, cursor)
-    elif action == "play":
-        asin = params.get("asin")
-        if asin:
-            playback.play(context, asin)
+    try:
+        if not action:
+            home.show_home(context)
+        elif action == "list":
+            rail_id = params.get("rail", "")
+            cursor = params.get("cursor")
+            listing.show_list(context, rail_id, cursor)
+        elif action == "play":
+            asin = params.get("asin")
+            if asin:
+                playback.play(context, asin)
+            return
+        elif action == "diagnostics":
+            diagnostics.show_results(context)
+        elif action == "search":
+            query = params.get("query")
+            cursor = params.get("cursor")
+            listing.show_search(context, query, cursor)
+        else:
+            home.show_home(context)
+    except PreflightError as exc:
+        show_preflight_error(exc)
+        xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
-    elif action == "diagnostics":
-        diagnostics.show_results(context)
-    elif action == "search":
-        query = params.get("query")
-        cursor = params.get("cursor")
-        listing.show_search(context, query, cursor)
-    else:
-        home.show_home(context)
 
     xbmcplugin.endOfDirectory(handle)
