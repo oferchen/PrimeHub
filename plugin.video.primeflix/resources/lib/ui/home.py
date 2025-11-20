@@ -1,4 +1,9 @@
-"""Home screen builder for PrimeFlix."""
+"""Home route builder showing Prime rails and search entry.
+
+This module orchestrates the Netflix-style home page, retrieving rails from the
+Prime backend through :mod:`resources.lib.backend.prime_api` with optional
+caching and performance logging.
+"""
 from __future__ import annotations
 
 import time

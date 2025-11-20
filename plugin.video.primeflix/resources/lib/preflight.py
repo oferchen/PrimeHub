@@ -1,10 +1,11 @@
 """Capability checks to ensure backend availability and DRM readiness.
 
-This module is called by routing/UI layers and by :mod:`resources.lib.backend.prime_api`
-to ensure the environment is usable before any navigation or playback happens.
-It performs backend discovery, verifies required add-ons such as
-``inputstream.adaptive`` are installed and enabled, and optionally queries the
-Prime backend for DRM readiness via JSON-RPC.
+This module is called by routing/UI layers and by
+:mod:`resources.lib.backend.prime_api` to ensure the environment is usable
+before any navigation or playback happens. It performs backend discovery,
+verifies required add-ons such as ``inputstream.adaptive`` are installed and
+enabled, and optionally queries the Prime backend for DRM readiness via
+JSON-RPC.
 """
 from __future__ import annotations
 

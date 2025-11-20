@@ -1,7 +1,8 @@
-"""Rail and search listings driven by backend results for router routes.
+"""Listing and search routes for PrimeFlix.
 
-The router calls :func:`show_list` and :func:`show_search` to render folders
-or playable items returned by :mod:`resources.lib.backend.prime_api`.
+The router calls :func:`show_list` and :func:`show_search` to render folders or
+playable items returned by :mod:`resources.lib.backend.prime_api`. Results are
+optionally cached and include performance logging to highlight slow rails.
 """
 from __future__ import annotations
 
