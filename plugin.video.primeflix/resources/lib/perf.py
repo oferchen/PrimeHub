@@ -3,8 +3,10 @@
 Functions here provide the ``@timed`` decorator plus threshold-aware logging
 used by routing, backend bindings, and UI modules. Logging honours the
 ``perf_logging`` setting so users can opt into verbose timing traces while
-still emitting warnings when thresholds are exceeded.
+still emitting warnings when thresholds are exceeded. The module deliberately
+keeps dependencies minimal so imports remain cheap at startup.
 """
+
 from __future__ import annotations
 
 import functools
@@ -76,12 +78,15 @@ def timed(label: str, warn_threshold_ms: Optional[float] = None) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             logging_enabled = is_perf_logging_enabled()
-            if not logging_enabled and warn_threshold_ms is None:
-                return func(*args, **kwargs)
             start = time.perf_counter()
             if logging_enabled:
                 _log(xbmc.LOGDEBUG, f"{label} started")
-            result = func(*args, **kwargs)
+            try:
+                result = func(*args, **kwargs)
+            except Exception as exc:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                _log(xbmc.LOGERROR, f"{label} errored after {elapsed_ms:.2f} ms: {exc}")
+                raise
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             if warn_threshold_ms is not None and elapsed_ms > warn_threshold_ms:
                 _log(xbmc.LOGWARNING, f"{label} finished in {elapsed_ms:.2f} ms")
