@@ -92,6 +92,9 @@ class _BaseStrategy:
     def get_region(self) -> Optional[str]:  # pragma: no cover - interface
         return None
 
+    def is_drm_ready(self) -> Optional[bool]:  # pragma: no cover - interface
+        return None
+
     def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
         raise NotImplementedError
 
@@ -123,6 +126,7 @@ class _DirectBackendStrategy(_BaseStrategy):
     SEARCH_CALLS = ("search", "search_catalog", "get_search")
     PLAY_CALLS = ("get_playable", "get_playback", "play", "resolve")
     REGION_CALLS = ("get_region", "region", "get_marketplace")
+    DRM_CALLS = ("is_drm_ready", "drm_ready", "check_drm", "has_drm")
 
     def __init__(self, backend_id: str) -> None:
         self._backend_id = backend_id
@@ -133,6 +137,7 @@ class _DirectBackendStrategy(_BaseStrategy):
         self._search_callable: Optional[Any] = None
         self._play_callable: Optional[Any] = None
         self._region_callable: Optional[Any] = None
+        self._drm_callable: Optional[Any] = None
         self._prepare()
 
     def _prepare(self) -> None:
@@ -173,6 +178,7 @@ class _DirectBackendStrategy(_BaseStrategy):
             self._search_callable = resolved["search"]
             self._play_callable = resolved["play"]
             self._region_callable = self._find_callable(module, self.REGION_CALLS)
+            self._drm_callable = self._find_callable(module, self.DRM_CALLS)
             return module
 
         # Fallback to class-based API discovery
@@ -192,6 +198,9 @@ class _DirectBackendStrategy(_BaseStrategy):
                 region_method = self._resolve_name(instance, self.REGION_CALLS)
                 if region_method:
                     self._region_callable = getattr(instance, region_method)
+                drm_method = self._resolve_name(instance, self.DRM_CALLS)
+                if drm_method:
+                    self._drm_callable = getattr(instance, drm_method)
                 return instance
         return None
 
@@ -250,6 +259,27 @@ class _DirectBackendStrategy(_BaseStrategy):
             region = value.get("region") or value.get("marketplace")
             if isinstance(region, str):
                 return region
+        return None
+
+    def is_drm_ready(self) -> Optional[bool]:
+        if self._drm_callable is None:
+            return None
+        try:
+            value = self._invoke(self._drm_callable)
+        except Exception:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "yes", "ready"):
+                return True
+            if lowered in ("false", "no", "not ready", "unavailable"):
+                return False
+        if isinstance(value, dict):
+            ready = value.get("ready") or value.get("drm_ready")
+            if isinstance(ready, bool):
+                return ready
         return None
 
     def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
@@ -346,6 +376,25 @@ class _IndirectBackendStrategy(_BaseStrategy):
         region = data.get("region") or data.get("marketplace")
         if isinstance(region, str):
             return region
+        return None
+
+    def is_drm_ready(self) -> Optional[bool]:
+        try:
+            data = self._execute("is_drm_ready")
+        except BackendError:
+            return None
+        if isinstance(data, bool):
+            return data
+        if isinstance(data, dict):
+            ready = data.get("ready") or data.get("drm_ready")
+            if isinstance(ready, bool):
+                return ready
+        if isinstance(data, str):
+            lowered = data.strip().lower()
+            if lowered in ("true", "yes", "ready"):
+                return True
+            if lowered in ("false", "no", "not ready", "unavailable"):
+                return False
         return None
 
     def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
@@ -550,6 +599,9 @@ class PrimeAPI:
 
     def get_playable(self, asin: str) -> Dict[str, Any]:
         return self._strategy.get_playable(asin)
+
+    def is_drm_ready(self) -> Optional[bool]:
+        return self._strategy.is_drm_ready()
 
 
 _backend_instance: Optional[PrimeAPI] = None
