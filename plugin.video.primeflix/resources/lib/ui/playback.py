@@ -7,6 +7,7 @@ instructs Kodi to play it via ``inputstream.adaptive``.
 from __future__ import annotations
 
 from typing import Any, Dict
+from urllib.parse import quote
 
 try:  # pragma: no cover - Kodi runtime
     import xbmcplugin
@@ -99,16 +100,30 @@ def _apply_inputstream_properties(listitem, playback: Dict[str, Any]) -> None:
     manifest_type = playback.get("manifest_type") or playback.get("type") or "mpd"
     listitem.setProperty("inputstream.adaptive.manifest_type", str(manifest_type))
     license_key = playback.get("license_key") or playback.get("licenseUrl") or playback.get("license_url")
-    if license_key:
-        listitem.setProperty("inputstream.adaptive.license_key", str(license_key))
     license_type = playback.get("license_type") or "com.widevine.alpha"
-    listitem.setProperty("inputstream.adaptive.license_type", str(license_type))
     headers = playback.get("headers") or playback.get("license_headers")
-    if isinstance(headers, dict) and license_key:
-        header_str = "&".join(f"{k}={v}" for k, v in headers.items())
+    header_str = _serialize_headers(headers) if isinstance(headers, dict) and headers else ""
+
+    if license_key:
+        if header_str and "|" not in str(license_key):
+            license_value = f"{license_key}|{header_str}|R{{SSM}}|"
+        else:
+            license_value = str(license_key)
+        listitem.setProperty("inputstream.adaptive.license_key", license_value)
+
+    if header_str:
         listitem.setProperty("inputstream.adaptive.stream_headers", header_str)
+
+    listitem.setProperty("inputstream.adaptive.license_type", str(license_type))
     if playback.get("is_live"):
         listitem.setProperty("inputstream.adaptive.manifest_update_parameter", "full")
+
+
+def _serialize_headers(headers: Dict[str, Any]) -> str:
+    encoded = []
+    for key, value in headers.items():
+        encoded.append(f"{quote(str(key))}={quote(str(value))}")
+    return "&".join(encoded)
 
 
 def _notify(addon: object, message: str) -> None:
