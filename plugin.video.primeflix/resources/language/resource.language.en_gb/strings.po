@@ -46,6 +46,9 @@ msgstr "Prime backend not available or DRM component missing — open the Amazon
 msgid "21100"
 msgstr "inputstream.adaptive is required. Enable or install it from the Kodi repository."
 
+msgid "21110"
+msgstr "DRM components are not ready. Open the Amazon VOD/Prime backend add-on, sign in, and ensure Widevine is enabled."
+
 msgid "30010"
 msgstr "Continue Watching"
 
