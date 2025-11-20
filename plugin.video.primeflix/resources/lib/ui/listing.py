@@ -1,8 +1,9 @@
-"""Rail and search listing views for PrimeFlix.
+"""Rail listing and search views for PrimeFlix.
 
-Called from :mod:`resources.lib.router` when users open a rail or trigger
-search. Fetches items from the Prime backend via :mod:`resources.lib.backend`
-and renders them as playable/listable items.
+Routes from :mod:`resources.lib.router` with ``action=list`` and
+``action=search`` land here. The module fetches paged rail data via
+:mod:`resources.lib.backend.prime_api`, builds playable list items, and feeds
+them to Kodi.
 """
 from __future__ import annotations
 

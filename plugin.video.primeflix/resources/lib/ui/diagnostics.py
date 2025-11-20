@@ -1,8 +1,8 @@
-"""Diagnostics route exposing strategy and timing information.
+"""Diagnostics route to measure performance and backend strategy.
 
-Called from :mod:`resources.lib.router` for ``action=diagnostics``. Runs rail
-fetches under cold/warm conditions and surfaces backend strategy selection to
-the user.
+Triggered via ``action=diagnostics`` from :mod:`resources.lib.router`, this
+module warms/cools cache runs to gauge timing, checks the current backend
+strategy, and renders human-readable results for troubleshooting.
 """
 from __future__ import annotations
 
