@@ -1,4 +1,8 @@
-"""Simple TTL cache backed by JSON files."""
+"""TTL JSON cache stored in the add-on profile for fast rail responses.
+
+Used by backend and UI layers to avoid repeated calls when navigating rails,
+listings, playback resolution, and diagnostics runs.
+"""
 from __future__ import annotations
 
 import json
