@@ -1,21 +1,25 @@
-"""Prime backend facade with automatic strategy selection for callers.
+"""Backend bridge that reuses an existing Prime Video add-on.
 
-The facade lazily instantiates a strategy selected via :func:`get_backend`,
-providing normalized data from the installed Prime Video backend via direct
-imports or JSON-RPC fallback. This module is invoked by UI layers (home,
-listing, playback, diagnostics).
+The PrimeFlix UI never talks to Prime Video directly. Instead, this module
+binds to an installed Prime Video add-on (such as Amazon VOD) using two
+strategies:
+
+* **Direct import**: load the backend's Python modules and call helper
+  functions when available.
+* **Plugin/JSON-RPC**: invoke the backend through ``Addons.ExecuteAddon`` and
+  parse the returned JSON payload.
+
+All public functions raise :class:`BackendUnavailable` when the backend cannot
+be reached and :class:`BackendError` for other failures.
 """
 from __future__ import annotations
-import importlib
-import inspect
+
+import importlib.util
 import json
 import os
 import sys
-import threading
-import time
 from dataclasses import dataclass
-from types import ModuleType
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:  # pragma: no cover - Kodi runtime
     import xbmc
@@ -33,660 +37,289 @@ except ImportError:  # pragma: no cover - local dev fallback
 
         @staticmethod
         def executeJSONRPC(payload: str) -> str:
-            return json.dumps({"result": {}})
-
-    class _AddonStub:
-        def __init__(self, addon_id: Optional[str] = None):
-            self._id = addon_id or "plugin.video.primeflix"
-
-        def getAddonInfo(self, key: str) -> str:
-            mapping = {
-                "id": self._id,
-                "name": "PrimeFlix",
-                "path": os.getcwd(),
-            }
-            return mapping.get(key, "")
-
-        def getSetting(self, key: str) -> str:  # type: ignore[override]
-            defaults = {
-                "region": "0",
-                "cache_ttl": "300",
-                "use_cache": "true",
-            }
-            return defaults.get(key, "")
-
-        def getSettingString(self, key: str) -> str:  # Kodi 21+
-            return self.getSetting(key)
-
-        def getSettingBool(self, key: str) -> bool:
-            return self.getSetting(key).lower() == "true"
-
-        def getSettingInt(self, key: str) -> int:
-            try:
-                return int(self.getSetting(key))
-            except ValueError:
-                return 0
+            return json.dumps({"result": {"value": None}})
 
     xbmc = _XBMCStub()  # type: ignore
-    xbmcaddon = type("addon", (), {"Addon": _AddonStub})  # type: ignore
+    xbmcaddon = type(  # type: ignore
+        "addon",
+        (),
+        {"Addon": lambda addon_id=None: type("AddonStub", (), {"getAddonInfo": lambda self, k: os.getcwd()})()},
+    )
 
-from ..cache import get_cache
-from ..perf import log_debug, log_info, timed
-from ..preflight import ensure_ready_or_raise
+LOG_PREFIX = "[PrimeFlix-backend]"
+BACKEND_CANDIDATES = (
+    "plugin.video.amazon-test",
+    "plugin.video.amazonprime",
+    "plugin.video.amazonvod",
+    "plugin.video.amazon",
+    "plugin.video.primevideo",
+)
+
+
+class BackendUnavailable(RuntimeError):
+    """Raised when the Prime backend cannot be reached."""
 
 
 class BackendError(RuntimeError):
-    """Raised when backend data could not be retrieved."""
+    """Raised when the Prime backend returns an unexpected response."""
 
 
-@dataclass(frozen=True)
-class RailData:
-    """Normalized representation for rail responses."""
+@dataclass
+class Playable:
+    url: str
+    manifest_type: str
+    license_key: Optional[str]
+    headers: Dict[str, str]
+    metadata: Dict[str, Any]
 
-    items: List[Dict[str, Any]]
-    cursor: Optional[str]
 
+class _DirectStrategy:
+    """Attempt to call backend helpers via direct import."""
 
-class _BaseStrategy:
-    name = "base"
+    def __init__(self, addon_id: str) -> None:
+        self.addon_id = addon_id
+        self._module = self._load_module(addon_id)
 
-    def get_region(self) -> Optional[str]:  # pragma: no cover - interface
-        return None
+    @staticmethod
+    def _load_module(addon_id: str):
+        addon = xbmcaddon.Addon(addon_id)
+        addon_path = addon.getAddonInfo("path")
+        candidates = (
+            os.path.join(addon_path, "resources", "lib", "api.py"),
+            os.path.join(addon_path, "resources", "lib", "backend.py"),
+        )
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                spec = importlib.util.spec_from_file_location("prime_backend", candidate)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[spec.name] = module
+                    spec.loader.exec_module(module)  # type: ignore[arg-type]
+                    return module
+        raise BackendUnavailable("Direct import not supported by backend")
 
-    def is_drm_ready(self) -> Optional[bool]:  # pragma: no cover - interface
-        return None
+    def _call(self, func_name: str, *args, **kwargs):
+        func = getattr(self._module, func_name, None)
+        if callable(func):
+            return func(*args, **kwargs)
+        raise BackendUnavailable("Backend helper not present")
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError
+        return self._call("get_home_rails")
 
-    def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
-        raise NotImplementedError
+    def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        data = self._call("get_rail_items", rail_id, cursor)
+        if isinstance(data, tuple) and len(data) == 2:
+            return data
+        return data, None  # type: ignore[misc]
 
-    def search(self, query: str, cursor: Optional[str], limit: int) -> RailData:
-        raise NotImplementedError
+    def get_playable(self, asin: str) -> Playable:
+        payload = self._call("get_playable", asin)
+        return normalize_playable(payload)
 
-    def get_playable(self, asin: str) -> Dict[str, Any]:
-        raise NotImplementedError
+    def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        data = self._call("search", query, cursor)
+        if isinstance(data, tuple) and len(data) == 2:
+            return data
+        return data, None  # type: ignore[misc]
 
-
-class _DirectBackendStrategy(_BaseStrategy):
-    """Strategy using direct Python imports from the backend add-on."""
-
-    name = "direct"
-    MODULE_CANDIDATES = (
-        "resources.lib.api",
-        "resources.lib.primevideo",
-        "resources.lib.prime_video",
-        "resources.lib.backend.api",
-    )
-    CLASS_CANDIDATES = (
-        "PrimeVideo",
-        "PrimeVideoApi",
-        "PrimeVideoAPI",
-        "API",
-    )
-    HOME_CALLS = ("get_home", "get_home_menu", "get_home_sections")
-    RAIL_CALLS = ("get_rail", "get_rail_items", "get_menu_items", "get_items", "get_list")
-    SEARCH_CALLS = ("search", "search_catalog", "get_search")
-    PLAY_CALLS = ("get_playable", "get_playback", "play", "resolve")
-    REGION_CALLS = ("get_region", "region", "get_marketplace")
-    DRM_CALLS = ("is_drm_ready", "drm_ready", "check_drm", "has_drm")
-
-    def __init__(self, backend_id: str) -> None:
-        self._backend_id = backend_id
-        self._api: Any = None
-        self._module: Optional[ModuleType] = None
-        self._home_callable: Optional[Any] = None
-        self._rail_callable: Optional[Any] = None
-        self._search_callable: Optional[Any] = None
-        self._play_callable: Optional[Any] = None
-        self._region_callable: Optional[Any] = None
-        self._drm_callable: Optional[Any] = None
-        self._prepare()
-
-    def _prepare(self) -> None:
-        addon = xbmcaddon.Addon(self._backend_id)
-        addon_path = addon.getAddonInfo("path")
-        if addon_path and addon_path not in sys.path:
-            sys.path.append(addon_path)
-        for module_name in self.MODULE_CANDIDATES:
-            try:
-                module = importlib.import_module(module_name)
-            except Exception:
-                continue
-            api = self._extract_api(module)
-            if api is not None:
-                self._module = module
-                self._api = api
-                break
-        if self._api is None:
-            raise BackendError("Direct strategy unavailable")
-
-    def _extract_api(self, module: ModuleType) -> Optional[Any]:
-        callable_pairs = (
-            ("home", self.HOME_CALLS),
-            ("rail", self.RAIL_CALLS),
-            ("search", self.SEARCH_CALLS),
-            ("play", self.PLAY_CALLS),
-        )
-        # Try module-level functions first
-        resolved = {}
-        for key, candidates in callable_pairs:
-            func = self._find_callable(module, candidates)
-            if func is None:
-                break
-            resolved[key] = func
-        else:
-            self._home_callable = resolved["home"]
-            self._rail_callable = resolved["rail"]
-            self._search_callable = resolved["search"]
-            self._play_callable = resolved["play"]
-            self._region_callable = self._find_callable(module, self.REGION_CALLS)
-            self._drm_callable = self._find_callable(module, self.DRM_CALLS)
-            return module
-
-        # Fallback to class-based API discovery
-        for class_name in self.CLASS_CANDIDATES:
-            candidate = getattr(module, class_name, None)
-            if candidate is None or not inspect.isclass(candidate):
-                continue
-            try:
-                instance = candidate()  # type: ignore[call-arg]
-            except Exception:
-                continue
-            if self._has_methods(instance):
-                self._home_callable = getattr(instance, self._resolve_name(instance, self.HOME_CALLS))
-                self._rail_callable = getattr(instance, self._resolve_name(instance, self.RAIL_CALLS))
-                self._search_callable = getattr(instance, self._resolve_name(instance, self.SEARCH_CALLS))
-                self._play_callable = getattr(instance, self._resolve_name(instance, self.PLAY_CALLS))
-                region_method = self._resolve_name(instance, self.REGION_CALLS)
-                if region_method:
-                    self._region_callable = getattr(instance, region_method)
-                drm_method = self._resolve_name(instance, self.DRM_CALLS)
-                if drm_method:
-                    self._drm_callable = getattr(instance, drm_method)
-                return instance
-        return None
-
-    @staticmethod
-    def _find_callable(module: ModuleType, names: Iterable[str]) -> Optional[Any]:
-        for name in names:
-            func = getattr(module, name, None)
-            if callable(func):
-                return func
-        return None
-
-    @staticmethod
-    def _has_methods(instance: Any) -> bool:
-        required_groups = (
-            _DirectBackendStrategy.HOME_CALLS,
-            _DirectBackendStrategy.RAIL_CALLS,
-            _DirectBackendStrategy.SEARCH_CALLS,
-            _DirectBackendStrategy.PLAY_CALLS,
-        )
-        for group in required_groups:
-            if _DirectBackendStrategy._resolve_name(instance, group) is None:
-                return False
-        return True
-
-    @staticmethod
-    def _resolve_name(instance: Any, names: Iterable[str]) -> Optional[str]:
-        for name in names:
-            func = getattr(instance, name, None)
-            if callable(func):
-                return name
-        return None
-
-    @staticmethod
-    def _invoke(func: Any, *args: Any, **kwargs: Any) -> Any:
-        try:
-            return func(*args, **kwargs)
-        except TypeError:
-            if kwargs:
-                return func(*args)
-            raise
-
-    def _ensure_prepared(self) -> None:
-        if not all((self._home_callable, self._rail_callable, self._search_callable, self._play_callable)):
-            raise BackendError("Incomplete direct backend binding")
-
-    def get_region(self) -> Optional[str]:
-        if self._region_callable is None:
-            return None
-        try:
-            value = self._invoke(self._region_callable)
-        except Exception:
-            return None
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            region = value.get("region") or value.get("marketplace")
-            if isinstance(region, str):
-                return region
-        return None
+    def get_region_info(self) -> Dict[str, Any]:
+        return self._call("get_region_info") or {}
 
     def is_drm_ready(self) -> Optional[bool]:
-        if self._drm_callable is None:
+        try:
+            return bool(self._call("is_drm_ready"))
+        except BackendUnavailable:
             return None
-        try:
-            value = self._invoke(self._drm_callable)
-        except Exception:
-            return None
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in ("true", "yes", "ready"):
-                return True
-            if lowered in ("false", "no", "not ready", "unavailable"):
-                return False
-        if isinstance(value, dict):
-            ready = value.get("ready") or value.get("drm_ready")
-            if isinstance(ready, bool):
-                return ready
-        return None
-
-    def get_home_rails(self) -> List[Dict[str, Any]]:
-        self._ensure_prepared()
-        try:
-            result = self._invoke(self._home_callable)
-        except TypeError:
-            result = self._invoke(self._home_callable, limit=25)
-        normalized = _normalize_rails(result)
-        return normalized or _default_rails()
-
-    def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
-        self._ensure_prepared()
-        try:
-            if cursor:
-                result = self._invoke(self._rail_callable, rail_id, cursor=cursor, limit=limit)
-            else:
-                result = self._invoke(self._rail_callable, rail_id, limit=limit)
-        except TypeError:
-            if cursor:
-                result = self._invoke(self._rail_callable, rail_id, cursor)
-            else:
-                result = self._invoke(self._rail_callable, rail_id)
-        return self._normalize(result)
-
-    def search(self, query: str, cursor: Optional[str], limit: int) -> RailData:
-        self._ensure_prepared()
-        kwargs: Dict[str, Any] = {"query": query, "limit": limit}
-        if cursor:
-            kwargs["cursor"] = cursor
-        try:
-            result = self._invoke(self._search_callable, **kwargs)
-        except TypeError:
-            args = (query,)
-            if cursor:
-                args += (cursor,)
-            result = self._invoke(self._search_callable, *args)
-        return self._normalize(result)
-
-    def get_playable(self, asin: str) -> Dict[str, Any]:
-        self._ensure_prepared()
-        result = self._invoke(self._play_callable, asin)
-        if not isinstance(result, dict):
-            raise BackendError("Backend returned unexpected playback payload")
-        return result
-
-    @staticmethod
-    def _normalize(payload: Any) -> RailData:
-        if isinstance(payload, RailData):
-            return payload
-        if isinstance(payload, dict):
-            items = payload.get("items") or payload.get("videos") or payload.get("data") or []
-            cursor = payload.get("cursor") or payload.get("next")
-            normalized = [_normalize_video(item) for item in items]
-            return RailData([item for item in normalized if item], _safe_str(cursor))
-        if isinstance(payload, (list, tuple)):
-            normalized = [_normalize_video(item) for item in payload]
-            return RailData([item for item in normalized if item], None)
-        raise BackendError("Backend returned unsupported rail payload")
 
 
-class _IndirectBackendStrategy(_BaseStrategy):
-    """Strategy invoking the backend add-on via JSON-RPC."""
+class _RpcStrategy:
+    """Fallback strategy that calls the backend through JSON-RPC."""
 
-    name = "indirect"
+    def __init__(self, addon_id: str) -> None:
+        self.addon_id = addon_id
 
-    def __init__(self, backend_id: str) -> None:
-        self._backend_id = backend_id
-        xbmcaddon.Addon(backend_id)  # ensure addon exists
-
-    def _execute(self, action: str, **params: Any) -> Dict[str, Any]:
+    def _execute(self, action: str, **params) -> Any:
         payload = {
             "jsonrpc": "2.0",
+            "id": 1,
             "method": "Addons.ExecuteAddon",
-            "params": {
-                "addonid": self._backend_id,
-                "params": {"action": action, **params},
-            },
-            "id": int(time.time() * 1000) & 0xFFFF,
+            "params": {"addonid": self.addon_id, "params": {"action": action, **{k: v for k, v in params.items() if v is not None}}},
         }
-        response = xbmc.executeJSONRPC(json.dumps(payload))
-        try:
-            data = json.loads(response)
-        except json.JSONDecodeError as exc:
-            raise BackendError("Invalid JSON from backend") from exc
-        result = data.get("result") or {}
-        if isinstance(result, dict):
-            raw = result.get("value") or result.get("data") or result.get("json")
-            if isinstance(raw, str):
-                try:
-                    return json.loads(raw)
-                except json.JSONDecodeError:
-                    raise BackendError("Backend returned malformed data")
-            if isinstance(result, dict):
-                return result  # already a dict
-        raise BackendError("Backend did not provide usable data")
-
-    def get_region(self) -> Optional[str]:
-        try:
-            data = self._execute("get_region")
-        except BackendError:
-            return None
-        region = data.get("region") or data.get("marketplace")
-        if isinstance(region, str):
-            return region
-        return None
+        response = json.loads(xbmc.executeJSONRPC(json.dumps(payload)))
+        value = response.get("result", {}).get("value")
+        if value is None:
+            raise BackendUnavailable("Backend did not return a response")
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except ValueError:
+                return value
+        return value
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
-        for action in ("home", "get_home", "get_home_menu"):
-            try:
-                data = self._execute(action)
-            except BackendError:
-                continue
-            normalized = _normalize_rails(data)
-            if normalized:
-                return normalized
-        return _default_rails()
+        data = self._execute("home_rails")
+        if not isinstance(data, list):
+            raise BackendError("Unexpected home rails format")
+        return data
+
+    def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        data = self._execute("rail_items", rail=rail_id, cursor=cursor)
+        if isinstance(data, dict):
+            items = data.get("items") or []
+            next_cursor = data.get("next")
+            return items, next_cursor
+        if isinstance(data, list):
+            return data, None
+        raise BackendError("Unexpected rail items format")
+
+    def get_playable(self, asin: str) -> Playable:
+        payload = self._execute("play", asin=asin)
+        return normalize_playable(payload)
+
+    def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        data = self._execute("search", query=query, cursor=cursor)
+        if isinstance(data, dict):
+            return data.get("items", []), data.get("next")
+        if isinstance(data, list):
+            return data, None
+        raise BackendError("Unexpected search payload")
+
+    def get_region_info(self) -> Dict[str, Any]:
+        data = self._execute("region")
+        return data if isinstance(data, dict) else {}
 
     def is_drm_ready(self) -> Optional[bool]:
         try:
             data = self._execute("is_drm_ready")
-        except BackendError:
+        except BackendUnavailable:
             return None
         if isinstance(data, bool):
             return data
-        if isinstance(data, dict):
-            ready = data.get("ready") or data.get("drm_ready")
+        if isinstance(data, dict) and "ready" in data:
+            ready = data.get("ready")
             if isinstance(ready, bool):
                 return ready
-        if isinstance(data, str):
-            lowered = data.strip().lower()
-            if lowered in ("true", "yes", "ready"):
-                return True
-            if lowered in ("false", "no", "not ready", "unavailable"):
-                return False
         return None
 
-    def get_rail(self, rail_id: str, cursor: Optional[str], limit: int) -> RailData:
-        params: Dict[str, Any] = {"rail": rail_id, "limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-        data = self._execute("get_rail", **params)
-        items = data.get("items") or data.get("videos") or []
-        cursor_value = data.get("cursor") or data.get("next")
-        normalized = [_normalize_video(item) for item in items]
-        return RailData([item for item in normalized if item], _safe_str(cursor_value))
 
-    def search(self, query: str, cursor: Optional[str], limit: int) -> RailData:
-        params: Dict[str, Any] = {"query": query, "limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-        data = self._execute("search", **params)
-        items = data.get("items") or data.get("videos") or []
-        cursor_value = data.get("cursor") or data.get("next")
-        normalized = [_normalize_video(item) for item in items]
-        return RailData([item for item in normalized if item], _safe_str(cursor_value))
-
-    def get_playable(self, asin: str) -> Dict[str, Any]:
-        data = self._execute("play", asin=asin)
-        if not isinstance(data, dict):
-            raise BackendError("Backend returned invalid playback data")
-        playback = data.get("playback") or data
-        if not isinstance(playback, dict):
-            raise BackendError("Playback payload missing")
-        return playback
-
-
-def _safe_str(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return str(value)
-
-
-def _normalize_video(item: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(item, dict):
-        return None
-    asin = item.get("asin") or item.get("id") or item.get("contentId") or item.get("content_id")
-    title = item.get("title") or item.get("name")
-    if not asin or not title:
-        return None
-    info = item.get("info") or {}
-    if not isinstance(info, dict):
-        info = {}
-    art = item.get("art") or {}
-    if not isinstance(art, dict):
-        art = {}
-    plot = item.get("plot") or info.get("plot") or item.get("synopsis")
-    mediatype = info.get("mediatype") or item.get("mediatype") or item.get("type")
-    if isinstance(mediatype, str):
-        mediatype = mediatype.lower()
-    duration = info.get("duration") or info.get("runtime") or item.get("runtime")
-    try:
-        duration_int = int(duration) if duration is not None else None
-    except (ValueError, TypeError):
-        duration_int = None
-    year = info.get("year") or item.get("year")
-    try:
-        year_int = int(year) if year is not None else None
-    except (ValueError, TypeError):
-        year_int = None
-    genres = info.get("genre") or item.get("genre") or []
-    if isinstance(genres, str):
-        genres = [g.strip() for g in genres.split("/") if g.strip()]
-    elif not isinstance(genres, list):
-        genres = []
-    normalized = {
-        "asin": asin,
-        "title": title,
-        "plot": plot or "",
-        "mediatype": mediatype or "video",
-        "duration": duration_int,
-        "year": year_int,
-        "genres": genres,
-        "art": {
-            "thumb": art.get("thumb") or art.get("poster") or art.get("fanart"),
-            "poster": art.get("poster") or art.get("thumb"),
-            "fanart": art.get("fanart") or art.get("landscape"),
-        },
-        "info": {
-            "plot": plot or "",
-            "title": title,
-            "duration": duration_int or 0,
-            "year": year_int or 0,
-            "genre": genres,
-            "mediatype": mediatype or "video",
-        },
-        "is_playable": bool(item.get("is_playable", item.get("playable", True))),
-        "is_folder": bool(item.get("is_folder", False)),
-    }
-    if "season" in info:
-        normalized["season"] = info.get("season")
-    if "episode" in info:
-        normalized["episode"] = info.get("episode")
-    return normalized
-
-
-def _normalize_rails(payload: Any) -> List[Dict[str, Any]]:
-    source = payload
-    if isinstance(payload, dict):
-        rails = payload.get("rails") or payload.get("items") or payload.get("data") or payload
-        source = rails
-    if not isinstance(source, (list, tuple)):
-        return []
-
-    normalized: List[Dict[str, Any]] = []
-    for entry in source:
-        if not isinstance(entry, dict):
+def discover_backend() -> Optional[str]:
+    for candidate in BACKEND_CANDIDATES:
+        try:
+            xbmcaddon.Addon(candidate)
+            return candidate
+        except Exception:
             continue
-        rail_id = entry.get("id") or entry.get("rail_id") or entry.get("slug")
-        title = entry.get("title") or entry.get("name") or rail_id
-        rail_type = entry.get("type") or entry.get("mediatype") or "mixed"
-        if rail_id is None and title is None:
-            continue
-        normalized.append(
-            {
-                "id": str(rail_id or title),
-                "title": str(title or rail_id),
-                "type": str(rail_type or "mixed"),
-            }
-        )
-    return normalized
+    return None
 
 
-def _default_rails() -> List[Dict[str, str]]:
-    return [
-        {"id": "continue", "title": "Continue Watching", "type": "mixed"},
-        {"id": "originals", "title": "Prime Originals", "type": "mixed"},
-        {"id": "movies", "title": "Movies", "type": "movies"},
-        {"id": "tv", "title": "TV", "type": "tv"},
-        {"id": "recommended", "title": "Recommended For You", "type": "mixed"},
-    ]
-
-
-RAIL_COLD_THRESHOLD_MS = 500.0
-HOME_COLD_THRESHOLD_MS = 1500.0
-HOME_WARM_THRESHOLD_MS = 300.0
+def _log(level: int, message: str) -> None:
+    xbmc.log(f"{LOG_PREFIX} {message}", level)
 
 
 class PrimeAPI:
-    """Facade exposing backend data retrieval with caching."""
+    """Facade that selects the best available backend strategy."""
 
-    REGION_OPTIONS = ("us", "uk", "de", "jp")
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._backend_id = ensure_ready_or_raise()
-        self._strategy: _BaseStrategy = self._select_strategy()
-        self._cache = get_cache()
-
-    def _select_strategy(self) -> _BaseStrategy:
-        errors: List[str] = []
-        for strategy_cls in (_DirectBackendStrategy, _IndirectBackendStrategy):
-            try:
-                strategy = strategy_cls(self._backend_id)
-                log_info(f"Using {strategy.name} backend strategy with {self._backend_id}")
-                return strategy
-            except Exception as exc:
-                errors.append(f"{strategy_cls.__name__}: {exc}")
-                log_debug(f"Strategy {strategy_cls.__name__} failed: {exc}")
-        raise BackendError("No backend strategy available: " + "; ".join(errors))
+    def __init__(self, backend_id: Optional[str] = None) -> None:
+        self.backend_id = backend_id or discover_backend()
+        if not self.backend_id:
+            raise BackendUnavailable("No compatible backend installed")
+        self._strategy_label = "rpc"
+        try:
+            self._strategy = _DirectStrategy(self.backend_id)
+            self._strategy_label = "direct"
+            _log(xbmc.LOGINFO, f"Using direct backend strategy for {self.backend_id}")
+        except BackendUnavailable:
+            self._strategy = _RpcStrategy(self.backend_id)
+            _log(xbmc.LOGINFO, f"Falling back to RPC backend strategy for {self.backend_id}")
 
     @property
-    def backend_id(self) -> str:
-        return self._backend_id
+    def strategy(self) -> str:
+        return self._strategy_label
 
-    @property
-    def strategy_name(self) -> str:
-        return self._strategy.name
+    def get_home_rails(self) -> List[Dict[str, Any]]:
+        data = self._strategy.get_home_rails()
+        return [normalize_rail(item) for item in data]
 
-    def get_region(self) -> str:
-        addon = xbmcaddon.Addon()
-        preferred_index = self._get_setting_int(addon, "region", 0)
-        preferred_index = max(0, min(preferred_index, len(self.REGION_OPTIONS) - 1))
-        preferred = self.REGION_OPTIONS[preferred_index]
-        backend_region = self._strategy.get_region()
-        if backend_region:
-            backend_region = backend_region.lower()
-            if backend_region != preferred:
-                log_info(f"Preferred region={preferred.upper()}, backend region={backend_region.upper()} — using backend")
-            return backend_region
-        return preferred
+    def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        items, next_cursor = self._strategy.get_rail_items(rail_id, cursor)
+        normalized = [normalize_item(item) for item in items]
+        return normalized, next_cursor
 
-    @staticmethod
-    def _get_setting_int(addon: Any, setting_id: str, default: int) -> int:
-        try:
-            return addon.getSettingInt(setting_id)
-        except AttributeError:
-            try:
-                return int(addon.getSetting(setting_id))
-            except Exception:
-                return default
-
-    @staticmethod
-    def _get_setting_bool(addon: Any, setting_id: str, default: bool) -> bool:
-        try:
-            return addon.getSettingBool(setting_id)
-        except AttributeError:
-            value = addon.getSetting(setting_id)
-            if isinstance(value, str):
-                return value.lower() == "true"
-            return default
-
-    @timed("PrimeAPI.get_rail", warn_threshold_ms=RAIL_COLD_THRESHOLD_MS)
-    def get_rail(self, rail_id: str, cursor: Optional[str], limit: int, ttl: int, use_cache: bool, force_refresh: bool = False) -> Tuple[RailData, bool]:
-        cache_key = f"rail::{rail_id}::{cursor or 'root'}"
-        if not force_refresh and use_cache:
-            cached = self._cache.get(cache_key, ttl_seconds=ttl)
-            if cached:
-                if isinstance(cached, dict) and "items" in cached:
-                    return RailData(cached["items"], cached.get("cursor")), True
-                if isinstance(cached, list):
-                    return RailData(cached, None), True
-        data = self._strategy.get_rail(rail_id, cursor, limit)
-        if use_cache:
-            self._cache.set(cache_key, {"items": data.items, "cursor": data.cursor}, ttl)
-        return data, False
-
-    @timed("PrimeAPI.search", warn_threshold_ms=RAIL_COLD_THRESHOLD_MS)
-    def search(self, query: str, cursor: Optional[str], limit: int, ttl: int, use_cache: bool) -> Tuple[RailData, bool]:
-        cache_key = f"search::{query.lower()}::{cursor or 'root'}"
-        if use_cache:
-            cached = self._cache.get(cache_key, ttl_seconds=ttl)
-            if cached:
-                if isinstance(cached, dict) and "items" in cached:
-                    return RailData(cached["items"], cached.get("cursor")), True
-                if isinstance(cached, list):
-                    return RailData(cached, None), True
-        data = self._strategy.search(query, cursor, limit)
-        if use_cache:
-            self._cache.set(cache_key, {"items": data.items, "cursor": data.cursor}, ttl)
-        return data, False
-
-    def get_playable(self, asin: str) -> Dict[str, Any]:
+    def get_playable(self, asin: str) -> Playable:
         return self._strategy.get_playable(asin)
+
+    def get_region_info(self) -> Dict[str, Any]:
+        data = self._strategy.get_region_info()
+        return data if isinstance(data, dict) else {}
 
     def is_drm_ready(self) -> Optional[bool]:
         return self._strategy.is_drm_ready()
 
-    @timed("PrimeAPI.get_home", warn_threshold_ms=HOME_COLD_THRESHOLD_MS)
-    def get_home_rails(self, ttl: int, use_cache: bool, force_refresh: bool = False) -> Tuple[List[Dict[str, Any]], bool]:
-        cache_key = "home::rails"
-        if use_cache and not force_refresh:
-            cached = self._cache.get(cache_key, ttl_seconds=ttl)
-            if isinstance(cached, list):
-                normalized = _normalize_rails(cached)
-                if normalized:
-                    return normalized, True
-        rails = self._strategy.get_home_rails()
-        if use_cache:
-            self._cache.set(cache_key, rails, ttl)
-        return rails, False
+    def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        items, next_cursor = self._strategy.search(query, cursor)
+        return [normalize_item(item) for item in items], next_cursor
+
+
+def normalize_rail(raw: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(raw.get("id") or raw.get("slug") or ""),
+        "title": str(raw.get("title") or raw.get("name") or ""),
+        "type": (raw.get("type") or "mixed").lower(),
+    }
+
+
+def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
+    asin = str(raw.get("asin") or raw.get("id") or raw.get("asin_id") or "")
+    art = raw.get("art") or {}
+    return {
+        "asin": asin,
+        "title": str(raw.get("title") or raw.get("name") or ""),
+        "plot": raw.get("plot") or raw.get("description") or "",
+        "year": _as_int(raw.get("year")),
+        "duration": _as_int(raw.get("duration")),
+        "art": {
+            "poster": art.get("poster") or art.get("landscape"),
+            "fanart": art.get("fanart") or art.get("background"),
+            "thumb": art.get("thumb") or art.get("poster"),
+        },
+        "is_movie": bool(raw.get("is_movie", False) or raw.get("type") == "movie"),
+        "is_show": bool(raw.get("is_show", False) or raw.get("type") == "show"),
+    }
+
+
+def normalize_playable(payload: Any) -> Playable:
+    if not isinstance(payload, dict):
+        raise BackendError("Playable payload must be a mapping")
+    url = payload.get("url") or payload.get("manifest")
+    if not url:
+        raise BackendError("Playable payload missing URL")
+    headers = payload.get("headers") or {}
+    license_key = payload.get("license_key") or payload.get("license")
+    manifest_type = payload.get("manifest_type") or payload.get("type") or "mpd"
+    metadata = payload.get("metadata") or {}
+    return Playable(
+        url=str(url),
+        manifest_type=str(manifest_type),
+        license_key=str(license_key) if license_key else None,
+        headers={str(k): str(v) for k, v in headers.items()},
+        metadata=metadata,
+    )
+
+
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 _backend_instance: Optional[PrimeAPI] = None
-_backend_lock = threading.Lock()
 
 
-def get_backend() -> PrimeAPI:
+def get_backend(backend_id: Optional[str] = None) -> PrimeAPI:
     global _backend_instance
-    if _backend_instance is None:
-        with _backend_lock:
-            if _backend_instance is None:
-                _backend_instance = PrimeAPI()
+    if _backend_instance is None or (backend_id and _backend_instance.backend_id != backend_id):
+        _backend_instance = PrimeAPI(backend_id)
     return _backend_instance
+

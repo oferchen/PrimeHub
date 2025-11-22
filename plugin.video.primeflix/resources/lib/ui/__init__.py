@@ -1,1 +1,1 @@
-"""UI package for PrimeFlix."""
+"""UI package for PrimeFlix routes."""

@@ -1,92 +1,53 @@
-msgid ""
-msgstr "Content-Type: text/plain; charset=UTF-8\nLanguage: en_GB\n"
-
-msgid "10000"
+msgid "#10000"
 msgstr "PrimeFlix Settings"
 
-msgid "10010"
-msgstr "Preferred region/TLD"
+msgid "#10010"
+msgstr "Preferred region"
 
-msgid "10011"
+msgid "#10011"
 msgstr "United States"
 
-msgid "10012"
+msgid "#10012"
 msgstr "United Kingdom"
 
-msgid "10013"
+msgid "#10013"
 msgstr "Germany"
 
-msgid "10014"
+msgid "#10014"
 msgstr "Japan"
 
-msgid "10020"
-msgstr "Maximum resolution"
+msgid "#10020"
+msgstr "Max resolution"
 
-msgid "10021"
+msgid "#10021"
 msgstr "Auto"
 
-msgid "10022"
+msgid "#10022"
 msgstr "1080p"
 
-msgid "10023"
+msgid "#10023"
 msgstr "720p"
 
-msgid "10030"
+msgid "#10030"
 msgstr "Use cache"
 
-msgid "10040"
+msgid "#10040"
 msgstr "Cache TTL (seconds)"
 
-msgid "10050"
+msgid "#10050"
 msgstr "Enable performance logging"
 
-msgid "21090"
-msgstr "Prime backend not available or DRM component missing — open the Amazon VOD add-on, log in, then retry."
+msgid "#21090"
+msgstr "Prime Video backend not detected. Please install and sign in to a compatible Amazon/Prime Video add-on."
 
-msgid "21100"
-msgstr "inputstream.adaptive is required. Enable or install it from the Kodi repository."
+msgid "#21100"
+msgstr "Required component inputstream.adaptive is missing or disabled. Enable it in Kodi Add-ons."
 
-msgid "21110"
-msgstr "DRM components are not ready. Open the Amazon VOD/Prime backend add-on, sign in, and ensure Widevine is enabled."
+msgid "#21110"
+msgstr "DRM session is not ready. Open the Prime Video add-on and complete login or Widevine setup."
 
-msgid "30010"
-msgstr "Continue Watching"
-
-msgid "30011"
-msgstr "Prime Originals"
-
-msgid "30012"
-msgstr "Movies"
-
-msgid "30013"
-msgstr "TV"
-
-msgid "30014"
-msgstr "Recommended For You"
-
-msgid "30020"
+msgid "#30000"
 msgstr "Search"
 
-msgid "30021"
+msgid "#30010"
 msgstr "More…"
-
-msgid "30030"
-msgstr "Search Prime Video"
-
-msgid "30031"
-msgstr "No results available"
-
-msgid "30040"
-msgstr "Run {number}: {time} ms ({state})"
-
-msgid "30041"
-msgstr "Run {run} [SLOW] {rail}: {time} ms ({state})"
-
-msgid "30042"
-msgstr "Backend strategy"
-
-msgid "30043"
-msgstr "warm cache"
-
-msgid "30044"
-msgstr "cold cache"

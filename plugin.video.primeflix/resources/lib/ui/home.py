@@ -1,67 +1,64 @@
-"""Home view building the Netflix-style rail list for PrimeFlix.
+"""Home route building Netflix-style rails for PrimeFlix.
 
-Called from :mod:`resources.lib.router` when no action is provided. Produces a
-set of rail directories that route into :func:`resources.lib.ui.listing.show_list`
-and a search entry.
+Called from :mod:`resources.lib.router` and responsible for building the root
+listing quickly using cached backend data when available.
 """
 from __future__ import annotations
 
-import time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional
 
 try:  # pragma: no cover - Kodi runtime
-    import xbmcplugin
-    import xbmcgui
     import xbmcaddon
+    import xbmcgui
+    import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
-    class _PluginStub:
-        handle = 1
+    class _ListItem:
+        def __init__(self, label=""):
+            self.label = label
+
+        def setArt(self, art: Dict[str, str]):
+            self.art = art
+
+        def setInfo(self, type_: str, info: Dict[str, Any]):
+            self.info = (type_, info)
+
+    class _XBMCPlugin:
+        SORT_METHOD_UNSORTED = 0
 
         @staticmethod
-        def addDirectoryItems(handle, items):  # type: ignore[override]
-            for url, listitem, isFolder in items:
-                print(f"ADD: {listitem.getLabel()} -> {url} ({'folder' if isFolder else 'item'})")
-
-        @staticmethod
-        def addDirectoryItem(handle, url, listitem, isFolder=False):
-            print(f"ADD: {listitem.getLabel()} -> {url} ({'folder' if isFolder else 'item'})")
+        def addDirectoryItems(handle, items):
+            print(f"ADD {len(items)} items")
 
         @staticmethod
         def setContent(handle, content):
-            print(f"SET CONTENT: {content}")
+            print(f"SET CONTENT {content}")
 
-    class _ListItemStub:
-        def __init__(self, label: str):
-            self._label = label
+    class _Addon:
+        def getSettingBool(self, key: str) -> bool:
+            return False
 
-        def getLabel(self) -> str:
-            return self._label
+        def getSettingInt(self, key: str) -> int:
+            return 300
 
-        def setArt(self, art):
-            pass
+        def getAddonInfo(self, key: str) -> str:
+            return "PrimeFlix"
 
-        def setInfo(self, info_type, info):
-            pass
+        def getLocalizedString(self, code: int) -> str:
+            return ""
 
-    class _AddonStub:
-        @staticmethod
-        def getLocalizedString(code: int) -> str:
-            return str(code)
+    xbmcgui = type("xbmcgui", (), {"ListItem": _ListItem})  # type: ignore
+    xbmcplugin = _XBMCPlugin()  # type: ignore
+    xbmcaddon = type("addon", (), {"Addon": lambda *a, **k: _Addon()})  # type: ignore
 
-    xbmcplugin = _PluginStub()  # type: ignore
-    xbmcgui = type("gui", (), {"ListItem": _ListItemStub})  # type: ignore
-    xbmcaddon = type("addon", (), {"Addon": lambda *args, **kwargs: _AddonStub()})  # type: ignore
+from ..backend import BackendError, BackendUnavailable, get_backend
+from ..cache import get_cache
+from ..perf import timed
+from ..preflight import PreflightError, ensure_ready_or_raise
 
-from ..backend.prime_api import BackendError, HOME_COLD_THRESHOLD_MS, HOME_WARM_THRESHOLD_MS, get_backend
-from ..perf import log_duration, timed
-from ..preflight import ensure_ready_or_raise
-from .listing import RAIL_DEFINITIONS
-
-HOME_CONTENT_TYPE = "videos"
-_RAIL_LABEL_MAP: Dict[str, int] = {str(item["id"]): int(item.get("label", 0)) for item in RAIL_DEFINITIONS}
+DEFAULT_CACHE_TTL = 300
 
 
-def _bool_setting(addon: object, key: str, default: bool) -> bool:
+def _get_setting_bool(addon, key: str, default: bool) -> bool:
     try:
         return addon.getSettingBool(key)
     except Exception:
@@ -71,9 +68,9 @@ def _bool_setting(addon: object, key: str, default: bool) -> bool:
             return default
 
 
-def _int_setting(addon: object, key: str, default: int) -> int:
+def _get_setting_int(addon, key: str, default: int) -> int:
     try:
-        return addon.getSettingInt(key)
+        return int(addon.getSettingInt(key))
     except Exception:
         try:
             return int(addon.getSetting(key))
@@ -81,63 +78,65 @@ def _int_setting(addon: object, key: str, default: int) -> int:
             return default
 
 
-@timed("home_build", warn_threshold_ms=HOME_COLD_THRESHOLD_MS)
+@timed("home_build")
 def show_home(context) -> None:
-    ensure_ready_or_raise()
+    backend_id = ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
-    backend = get_backend()
-    xbmcplugin.setContent(context.handle, HOME_CONTENT_TYPE)
+    cache = get_cache()
+    rails = fetch_home_rails(addon, cache, backend_id)
+    search_label = _safe_get_string(addon, 30000, "Search")
+    _build_directory(context, rails, search_label)
 
-    ttl = _int_setting(addon, "cache_ttl", 300)
-    use_cache = _bool_setting(addon, "use_cache", True)
 
-    start = time.perf_counter()
-    try:
-        rails, from_cache = backend.get_home_rails(ttl, use_cache)
-    except BackendError as exc:
-        _notify(addon, str(exc))
-        return
-    elapsed_ms = (time.perf_counter() - start) * 1000.0
-    log_duration(
-        "home",
-        elapsed_ms,
-        warm=from_cache,
-        warm_threshold_ms=HOME_WARM_THRESHOLD_MS,
-        cold_threshold_ms=HOME_COLD_THRESHOLD_MS,
-    )
+def fetch_home_rails(addon, cache, backend_id: str) -> List[Dict[str, Any]]:
+    use_cache = _get_setting_bool(addon, "use_cache", True)
+    cache_ttl = _get_setting_int(addon, "cache_ttl", DEFAULT_CACHE_TTL)
 
-    items: List[Tuple[str, xbmcgui.ListItem, bool]] = []
+    rails: Optional[List[Dict[str, Any]]] = None
+    cache_key = "home_rails"
+    if use_cache:
+        rails = cache.get(cache_key, ttl_seconds=cache_ttl)
+
+    if rails is None:
+        backend = get_backend(backend_id)
+        try:
+            rails = backend.get_home_rails()
+            if use_cache:
+                cache.set(cache_key, rails, cache_ttl)
+        except (BackendUnavailable, BackendError) as exc:
+            raise PreflightError(str(exc))
+
+    return rails or []
+
+
+def _build_directory(context, rails: List[Dict[str, Any]], search_label: str) -> None:
+    xbmcplugin.setContent(context.handle, "videos")
+    items = []
     for rail in rails:
-        rail_id = str(rail.get("id", ""))
-        label = str(rail.get("title") or _label_for(addon, rail_id))
-        listitem = xbmcgui.ListItem(label)
-        url = context.build_url(action="list", rail=rail_id)
-        items.append((url, listitem, True))
+        url = context.build_url(action="list", rail=rail.get("id", ""))
+        li = xbmcgui.ListItem(label=rail.get("title", ""))
+        li.setInfo(
+            "video",
+            {
+                "title": rail.get("title", ""),
+                "plot": rail.get("title", ""),
+            },
+        )
+        items.append((url, li, True))
 
-    search_label = addon.getLocalizedString(30020)
-    search_item = xbmcgui.ListItem(search_label)
+    # Search shortcut always last
     search_url = context.build_url(action="search")
+    search_item = xbmcgui.ListItem(label=search_label)
+    search_item.setInfo("video", {"title": search_label})
     items.append((search_url, search_item, True))
 
-    if hasattr(xbmcplugin, "addDirectoryItems"):
-        xbmcplugin.addDirectoryItems(context.handle, items)
-    else:  # pragma: no cover - stub fallback
-        for url, listitem, isFolder in items:
-            xbmcplugin.addDirectoryItem(context.handle, url, listitem, isFolder=isFolder)
+    xbmcplugin.addDirectoryItems(context.handle, items)
 
 
-def _label_for(addon: object, rail_id: str) -> str:
-    label_id = _RAIL_LABEL_MAP.get(rail_id)
-    if label_id:
-        label = addon.getLocalizedString(label_id)
-        if label:
-            return label
-    return rail_id
-
-
-def _notify(addon: object, message: str) -> None:
+def _safe_get_string(addon, code: int, fallback: str) -> str:
     try:
-        dialog = xbmcgui.Dialog()
-        dialog.notification(addon.getAddonInfo("name"), message)  # type: ignore[attr-defined]
+        value = addon.getLocalizedString(code)
+        return value or fallback
     except Exception:
-        pass
+        return fallback
+
