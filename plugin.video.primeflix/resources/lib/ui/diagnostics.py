@@ -1,187 +1,87 @@
-"""Diagnostics route to measure performance and backend strategy.
-
-Triggered via ``action=diagnostics`` from :mod:`resources.lib.router`, this
-module warms/cools cache runs to gauge timing, checks the current backend
-strategy, and renders human-readable results for troubleshooting.
-"""
+"""Diagnostics route to validate performance and backend strategy."""
 from __future__ import annotations
 
 import time
-from typing import List, Tuple
+from typing import Any, Dict, List
 
 try:  # pragma: no cover - Kodi runtime
-    import xbmcplugin
-    import xbmcgui
     import xbmcaddon
+    import xbmcgui
+    import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
-    class _PluginStub:
-        handle = 1
+    class _ListItem:
+        def __init__(self, label=""):
+            self.label = label
 
-        @staticmethod
-        def addDirectoryItems(handle, items):  # type: ignore[override]
-            for url, listitem, isFolder in items:
-                print(f"ADD: {listitem.getLabel()} -> {url} ({'folder' if isFolder else 'item'})")
+        def setInfo(self, type_: str, info: Dict[str, Any]):
+            self.info = (type_, info)
 
+    class _Plugin:
         @staticmethod
-        def addDirectoryItem(handle, url, listitem, isFolder=False):
-            print(f"ADD: {listitem.getLabel()} -> {url} ({'folder' if isFolder else 'item'})")
+        def addDirectoryItems(handle, items):
+            print(f"ADD {len(items)} items")
 
         @staticmethod
         def setContent(handle, content):
-            print(f"SET CONTENT: {content}")
+            print(f"SET CONTENT {content}")
 
-    class _ListItemStub:
-        def __init__(self, label: str):
-            self._label = label
+    xbmcgui = type("xbmcgui", (), {"ListItem": _ListItem, "Dialog": lambda: None})  # type: ignore
+    xbmcplugin = _Plugin()  # type: ignore
+    xbmcaddon = type(
+        "addon",
+        (),
+        {
+            "Addon": lambda *a, **k: type(
+                "AddonStub",
+                (),
+                {
+                    "getSettingBool": lambda self, k: False,
+                    "getSettingInt": lambda self, k: 0,
+                    "getSetting": lambda self, k: 0,
+                    "getLocalizedString": lambda self, k: "",
+                },
+            )(),
+        },
+    )  # type: ignore
 
-        def getLabel(self) -> str:
-            return self._label
-
-    class _AddonStub:
-        @staticmethod
-        def getLocalizedString(code: int) -> str:
-            return str(code)
-
-    xbmcplugin = _PluginStub()  # type: ignore
-    xbmcgui = type("gui", (), {"ListItem": _ListItemStub})  # type: ignore
-    xbmcaddon = type("addon", (), {"Addon": lambda *args, **kwargs: _AddonStub()})  # type: ignore
-
-from ..backend.prime_api import (
-    HOME_COLD_THRESHOLD_MS,
-    HOME_WARM_THRESHOLD_MS,
-    RAIL_COLD_THRESHOLD_MS,
-    BackendError,
-    get_backend,
-)
+from ..backend import get_backend
 from ..cache import get_cache
 from ..perf import log_duration, timed
 from ..preflight import ensure_ready_or_raise
-from .listing import RAIL_DEFINITIONS
-
-HOME_CONTENT_TYPE = "videos"
-WARM_THRESHOLD_MS = 150.0
+from .home import fetch_home_rails
 
 
-def _addon():
-    return xbmcaddon.Addon()
-
-
-def _bool_setting(addon: object, key: str, default: bool) -> bool:
-    try:
-        return addon.getSettingBool(key)
-    except Exception:
-        try:
-            return str(addon.getSetting(key)).lower() == "true"
-        except Exception:
-            return default
-
-
-def _int_setting(addon: object, key: str, default: int) -> int:
-    try:
-        return addon.getSettingInt(key)
-    except Exception:
-        try:
-            return int(addon.getSetting(key))
-        except Exception:
-            return default
-
-
-def _thresholds(warm: bool) -> Tuple[float, float]:
-    return (None, WARM_THRESHOLD_MS) if warm else (RAIL_COLD_THRESHOLD_MS, None)
-
-
-@timed("diagnostics.show_results")
+@timed("diagnostics")
 def show_results(context) -> None:
-    ensure_ready_or_raise()
-    addon = _addon()
-    backend = get_backend()
+    backend_id = ensure_ready_or_raise()
+    backend = get_backend(backend_id)
     cache = get_cache()
-    xbmcplugin.setContent(context.handle, HOME_CONTENT_TYPE)
+    addon = xbmcaddon.Addon()
 
-    ttl = _int_setting(addon, "cache_ttl", 300)
-    use_cache = _bool_setting(addon, "use_cache", True)
+    results: List[Dict[str, Any]] = []
 
-    runs: List[Tuple[str, bool, float]] = []
-    for run in range(1, 4):
-        force_refresh = run == 1
-        if force_refresh:
-            cache.clear_prefix("home::")
+    cache.clear_prefix("home")
+    for idx in range(3):
+        warm = idx > 0
         start = time.perf_counter()
-        try:
-            _rails, from_cache = backend.get_home_rails(ttl, use_cache, force_refresh=force_refresh)
-        except BackendError as exc:
-            _notify(addon, str(exc))
-            return
+        cache.clear_prefix("rail:") if not warm else None
+        fetch_home_rails(addon, cache, backend_id)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        runs.append(("cold" if force_refresh else "warm", from_cache, elapsed_ms))
-        log_duration(
-            "diagnostics:home",
-            elapsed_ms,
-            warm=(run > 1 or from_cache),
-            warm_threshold_ms=HOME_WARM_THRESHOLD_MS,
-            cold_threshold_ms=HOME_COLD_THRESHOLD_MS,
-            details=f"run={run}",
-        )
+        log_duration("home", elapsed_ms, warm=warm, warm_threshold_ms=300.0, cold_threshold_ms=1500.0)
+        results.append({
+            "label": f"Run {idx + 1}: {elapsed_ms:.0f} ms ({'warm' if warm else 'cold'}, strategy={backend.strategy})",
+            "elapsed": elapsed_ms,
+        })
 
-    rail_id = str(RAIL_DEFINITIONS[0]["id"]) if RAIL_DEFINITIONS else "movies"
-    start = time.perf_counter()
-    try:
-        data, from_cache = backend.get_rail(rail_id, None, 10, ttl, use_cache, force_refresh=True)
-    except BackendError:
-        data, from_cache = None, False
-    rail_elapsed_ms = (time.perf_counter() - start) * 1000.0
-    log_duration(
-        f"diagnostics:rail:{rail_id}",
-        rail_elapsed_ms,
-        warm=from_cache,
-        warm_threshold_ms=WARM_THRESHOLD_MS,
-        cold_threshold_ms=RAIL_COLD_THRESHOLD_MS,
-    )
+    _render_results(context, results)
 
+
+def _render_results(context, results: List[Dict[str, Any]]) -> None:
+    xbmcplugin.setContent(context.handle, "videos")
     items = []
-    for idx, (state, _cached, elapsed_ms) in enumerate(runs, start=1):
-        cold_threshold, warm_threshold = _thresholds(state != "cold")
-        threshold = warm_threshold if state != "cold" else cold_threshold
-        label_template = addon.getLocalizedString(30040)
-        display_state = addon.getLocalizedString(30044 if state == "cold" else 30043)
-        title = label_template.format(number=idx, time=int(elapsed_ms), state=display_state)
-        if threshold and elapsed_ms > threshold:
-            slow_template = addon.getLocalizedString(30041)
-            title = slow_template.format(run=idx, rail="home", time=int(elapsed_ms), state=display_state)
-        listitem = xbmcgui.ListItem(title)
-        items.append((context.build_url(), listitem, False))
+    for result in results:
+        li = xbmcgui.ListItem(label=result["label"])
+        li.setInfo("video", {"title": result["label"], "plot": result["label"]})
+        items.append(("", li, False))
+    xbmcplugin.addDirectoryItems(context.handle, items)
 
-    if data is not None:
-        display_state = addon.getLocalizedString(30044)
-        threshold_exceeded = rail_elapsed_ms > RAIL_COLD_THRESHOLD_MS
-        if threshold_exceeded:
-            slow_template = addon.getLocalizedString(30041)
-            rail_title = slow_template.format(
-                run=1,
-                rail=rail_id,
-                time=int(rail_elapsed_ms),
-                state=display_state,
-            )
-        else:
-            label_template = addon.getLocalizedString(30040)
-            rail_title = label_template.format(number=1, time=int(rail_elapsed_ms), state=display_state)
-        items.append((context.build_url(), xbmcgui.ListItem(rail_title), False))
-
-    strategy_label = addon.getLocalizedString(30042)
-    strategy_value = backend.strategy_name
-    strategy_item = xbmcgui.ListItem(f"{strategy_label}: {strategy_value}")
-    items.append((context.build_url(), strategy_item, False))
-
-    if hasattr(xbmcplugin, "addDirectoryItems"):
-        xbmcplugin.addDirectoryItems(context.handle, items)
-    else:  # pragma: no cover - stub fallback
-        for url, listitem, isFolder in items:
-            xbmcplugin.addDirectoryItem(context.handle, url, listitem, isFolder=isFolder)
-
-
-def _notify(addon: object, message: str) -> None:
-    try:
-        dialog = xbmcgui.Dialog()
-        dialog.notification(addon.getAddonInfo("name"), message)  # type: ignore[attr-defined]
-    except Exception:
-        pass
