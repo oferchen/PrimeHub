@@ -1,4 +1,4 @@
-"""Performance utilities for logging execution time across the add-on.
+"""Performance logging helpers for the PrimeFlix frontend.
 
 Functions here provide the ``@timed`` decorator plus threshold-aware logging
 used by routing, backend bindings, and UI modules. Logging honours the
@@ -6,7 +6,6 @@ used by routing, backend bindings, and UI modules. Logging honours the
 still emitting warnings when thresholds are exceeded. The module deliberately
 keeps dependencies minimal so imports remain cheap at startup.
 """
-
 from __future__ import annotations
 
 import functools
