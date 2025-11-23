@@ -132,17 +132,6 @@ def ensure_ready_or_raise(target_backend: Optional[str] = None) -> str:
     return backend_id
 
 
-def _notify_missing(message_id: str) -> None:
-    addon = xbmcaddon.Addon()
-    dialog = xbmcgui.Dialog()
-    title = addon.getAddonInfo("name")
-    message = _get_message(message_id)
-    try:
-        dialog.ok(title, message)
-    except Exception:
-        log_warning(message)
-
-
 def _get_message(message_id: str) -> str:
     addon = xbmcaddon.Addon()
     try:
@@ -155,7 +144,13 @@ def show_preflight_error(error: PreflightError) -> None:
     """Display a preflight failure in a Kodi-friendly way."""
 
     message = getattr(error, "message", str(error))
-    _notify_missing(message)
+    addon = xbmcaddon.Addon()
+    title = addon.getAddonInfo("name")
+    try:
+        dialog = xbmcgui.Dialog()
+        dialog.ok(title, message)
+    except Exception:
+        log_warning(message)
 
 
 def _discover_backend() -> Optional[str]:

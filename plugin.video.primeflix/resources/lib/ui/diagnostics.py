@@ -1,4 +1,8 @@
-"""Diagnostics route to validate performance and backend strategy."""
+"""Diagnostics route for validating backend strategy and performance.
+
+Invoked from :mod:`resources.lib.router` to run repeated home builds and show
+timing/strategy information in a user-visible listing.
+"""
 from __future__ import annotations
 
 import time
