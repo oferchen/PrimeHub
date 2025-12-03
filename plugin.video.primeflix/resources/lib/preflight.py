@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - local dev fallback
             if key == "id":
                 return self._id
             if key == "name":
-                return "PrimeFlix"
+                return "PrimeHub"
             return ""
 
         def getLocalizedString(self, code: int) -> str:
@@ -53,6 +53,8 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmc = _XBMC()  # type: ignore
     xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
     xbmcgui = type("gui", (), {"Dialog": _Dialog})  # type: ignore
+
+LOG_PREFIX = "[PrimeHub]"
 
 from .perf import log_info, log_warning
 

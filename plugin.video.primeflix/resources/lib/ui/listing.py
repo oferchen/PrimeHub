@@ -139,9 +139,10 @@ def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
 
 def _prompt_search() -> Optional[str]:
     try:
+        addon = xbmcaddon.Addon()
         keyboard = xbmcgui.Dialog()
         # type: ignore[attr-defined]
-        return keyboard.input("Search Prime Video")  # pragma: no cover - Kodi runtime
+        return keyboard.input(addon.getLocalizedString(30030))  # pragma: no cover - Kodi runtime
     except Exception:
         return None
 

@@ -1,25 +1,16 @@
-"""Backend bridge that reuses an existing Prime Video add-on.
+"""Backend bridge that uses Amazon VOD's internal API modules.
 
-The PrimeFlix UI never talks to Prime Video directly. Instead, this module
-binds to an installed Prime Video add-on (such as Amazon VOD) using two
-strategies:
-
-* **Direct import**: load the backend's Python modules and call helper
-  functions when available.
-* **Plugin/JSON-RPC**: invoke the backend through ``Addons.ExecuteAddon`` and
-  parse the returned JSON payload.
-
-All public functions raise :class:`BackendUnavailable` when the backend cannot
-be reached and :class:`BackendError` for other failures.
+PrimeHub imports Amazon VOD's modules and uses the same backend API
+to fetch real Prime Video catalog data and playback URLs.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 try:  # pragma: no cover - Kodi runtime
     import xbmc
@@ -35,10 +26,6 @@ except ImportError:  # pragma: no cover - local dev fallback
         def log(message: str, level: int = 0) -> None:
             print(f"[xbmc:{level}] {message}")
 
-        @staticmethod
-        def executeJSONRPC(payload: str) -> str:
-            return json.dumps({"result": {"value": None}})
-
     xbmc = _XBMCStub()  # type: ignore
     xbmcaddon = type(  # type: ignore
         "addon",
@@ -46,7 +33,7 @@ except ImportError:  # pragma: no cover - local dev fallback
         {"Addon": lambda addon_id=None: type("AddonStub", (), {"getAddonInfo": lambda self, k: os.getcwd()})()},
     )
 
-LOG_PREFIX = "[PrimeFlix-backend]"
+LOG_PREFIX = "[PrimeHub-backend]"
 BACKEND_CANDIDATES = (
     "plugin.video.amazon-test",
     "plugin.video.amazonprime",
@@ -73,134 +60,215 @@ class Playable:
     metadata: Dict[str, Any]
 
 
-class _DirectStrategy:
-    """Attempt to call backend helpers via direct import."""
+class _AmazonVODIntegration:
+    """Integration using Amazon VOD's internal API."""
 
     def __init__(self, addon_id: str) -> None:
         self.addon_id = addon_id
-        self._module = self._load_module(addon_id)
+        self._pv = None
+        self._globals = None
+        self._init_amazon_modules()
 
-    @staticmethod
-    def _load_module(addon_id: str):
-        addon = xbmcaddon.Addon(addon_id)
+    def _init_amazon_modules(self) -> None:
+        """Import Amazon VOD modules and initialize PrimeVideo."""
+        addon = xbmcaddon.Addon(self.addon_id)
         addon_path = addon.getAddonInfo("path")
-        candidates = (
-            os.path.join(addon_path, "resources", "lib", "api.py"),
-            os.path.join(addon_path, "resources", "lib", "backend.py"),
-        )
-        for candidate in candidates:
-            if os.path.exists(candidate):
-                spec = importlib.util.spec_from_file_location("prime_backend", candidate)
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[spec.name] = module
-                    spec.loader.exec_module(module)  # type: ignore[arg-type]
-                    return module
-        raise BackendUnavailable("Direct import not supported by backend")
+        lib_path = os.path.join(addon_path, "resources", "lib")
 
-    def _call(self, func_name: str, *args, **kwargs):
-        func = getattr(self._module, func_name, None)
-        if callable(func):
-            return func(*args, **kwargs)
-        raise BackendUnavailable("Backend helper not present")
+        # Add Amazon VOD lib to path
+        if lib_path not in sys.path:
+            sys.path.insert(0, lib_path)
+
+        try:
+            # Import Amazon VOD's modules
+            import importlib
+
+            # Import common (contains Globals singleton)
+            common = importlib.import_module('common')
+
+            # Initialize Globals singleton (required by Amazon VOD)
+            self._globals = common.Globals()
+
+            # Import web_api (contains PrimeVideo class)
+            web_api = importlib.import_module('web_api')
+
+            # Create PrimeVideo instance
+            self._pv = web_api.PrimeVideo()
+
+            # Build root catalog
+            if hasattr(self._pv, 'BuildRoot'):
+                self._pv.BuildRoot()
+
+            _log(xbmc.LOGINFO, f"Successfully initialized Amazon VOD API from {lib_path}")
+
+        except Exception as e:
+            _log(xbmc.LOGERROR, f"Failed to initialize Amazon VOD modules: {e}")
+            _log(xbmc.LOGDEBUG, f"sys.path: {sys.path}")
+            raise BackendUnavailable(f"Cannot initialize Amazon VOD API: {e}")
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
-        return self._call("get_home_rails")
+        """Get rails from Amazon VOD catalog."""
+        if not self._pv or not hasattr(self._pv, '_catalog'):
+            return self._get_default_rails()
+
+        catalog = getattr(self._pv, '_catalog', {})
+        root = catalog.get('root', {})
+
+        rails = []
+        for key, node in root.items():
+            if isinstance(node, dict) and node.get('title'):
+                rails.append({
+                    "id": key,
+                    "title": node.get('title', key),
+                    "type": "mixed",
+                    "path": key,
+                })
+
+        if not rails:
+            rails = self._get_default_rails()
+
+        _log(xbmc.LOGDEBUG, f"Found {len(rails)} rails in Amazon VOD catalog")
+        return rails
+
+    def _get_default_rails(self) -> List[Dict[str, Any]]:
+        """Default rails if catalog unavailable."""
+        return [
+            {"id": "watchlist", "title": "My Watchlist", "type": "mixed", "path": "watchlist"},
+            {"id": "root", "title": "Home", "type": "mixed", "path": ""},
+            {"id": "search", "title": "Search", "type": "mixed", "path": "search"},
+        ]
 
     def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        data = self._call("get_rail_items", rail_id, cursor)
-        if isinstance(data, tuple) and len(data) == 2:
-            return data
-        return data, None  # type: ignore[misc]
+        """Fetch items for a rail from Amazon VOD catalog."""
+        if not self._pv:
+            return [], None
+
+        try:
+            # Try to browse the catalog path
+            if hasattr(self._pv, '_catalog'):
+                catalog = getattr(self._pv, '_catalog', {})
+                root = catalog.get('root', {})
+                node = root.get(rail_id, {})
+
+                # Extract items from node if it has them
+                if isinstance(node, dict):
+                    content = node.get('content', [])
+                    items = self._parse_catalog_items(content)
+                    if items:
+                        return items, None
+
+            # Fallback: provide plugin URL to open Amazon VOD
+            return self._create_launcher_item(rail_id), None
+
+        except Exception as e:
+            _log(xbmc.LOGWARNING, f"Failed to get items for {rail_id}: {e}")
+            return self._create_launcher_item(rail_id), None
+
+    def _parse_catalog_items(self, content: List[Any]) -> List[Dict[str, Any]]:
+        """Parse catalog items into normalized format."""
+        items = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+
+            asin = item.get('asin') or item.get('titleId') or ''
+            if not asin:
+                continue
+
+            items.append({
+                "asin": asin,
+                "title": item.get('title', ''),
+                "plot": item.get('synopsis', ''),
+                "year": item.get('year'),
+                "duration": item.get('runtime'),
+                "art": {
+                    "poster": item.get('poster', ''),
+                    "fanart": item.get('fanart', ''),
+                    "thumb": item.get('thumb', ''),
+                },
+                "is_movie": item.get('contentType') == 'movie',
+                "is_show": item.get('contentType') in ('show', 'series'),
+            })
+
+        return items
+
+    def _create_launcher_item(self, rail_id: str) -> List[Dict[str, Any]]:
+        """Create an item that launches Amazon VOD."""
+        return [{
+            "asin": f"LAUNCHER_{rail_id}",
+            "title": f"Browse {rail_id.title()} in Amazon VOD",
+            "plot": "Click to open Amazon Prime Video and browse this category",
+            "year": None,
+            "duration": None,
+            "art": {},
+            "is_movie": False,
+            "is_show": False,
+            "plugin_url": f"plugin://{self.addon_id}/?mode={rail_id}",
+        }]
 
     def get_playable(self, asin: str) -> Playable:
-        payload = self._call("get_playable", asin)
-        return normalize_playable(payload)
+        """Get playback info from Amazon VOD."""
+        if not self._pv or not hasattr(self._pv, "GetStream"):
+            _log(xbmc.LOGWARNING, "Backend does not support direct playback. Falling back to plugin URL.")
+            raise BackendError(f"Use Amazon VOD for playback: plugin://{self.addon_id}/?mode=PlayVideo&asin={asin}")
+
+        try:
+            stream_data = self._pv.GetStream(asin=asin, play=False)
+            if not stream_data or not isinstance(stream_data, dict):
+                raise BackendError("Failed to get stream data from backend.")
+
+            metadata = stream_data.get("metadata", {})
+            if not metadata and "title" in stream_data:
+                metadata = {
+                    k: stream_data[k]
+                    for k in ["title", "plot", "year", "duration", "art"]
+                    if k in stream_data
+                }
+
+            license_key = ""
+            drm_info = stream_data.get("drm")
+            if drm_info and drm_info.get("type") == "com.widevine.alpha" and drm_info.get("license_url"):
+                license_key = drm_info["license_url"]
+                if "headers" in drm_info:
+                    license_key += "|" + "&".join([f"{k}={v}" for k, v in drm_info["headers"].items()])
+
+            return Playable(
+                url=stream_data.get("url", ""),
+                manifest_type=stream_data.get("type", "mpd"),
+                license_key=license_key,
+                headers=stream_data.get("headers", {}),
+                metadata=metadata,
+            )
+        except Exception as e:
+            _log(xbmc.LOGERROR, f"Failed to get playable item for {asin}: {e}")
+            raise BackendError(f"Could not retrieve playable stream for {asin}.")
 
     def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        data = self._call("search", query, cursor)
-        if isinstance(data, tuple) and len(data) == 2:
-            return data
-        return data, None  # type: ignore[misc]
+        """Search via Amazon VOD."""
+        if not self._pv or not hasattr(self._pv, "Search"):
+            return [], None
 
-    def get_region_info(self) -> Dict[str, Any]:
-        return self._call("get_region_info") or {}
-
-    def is_drm_ready(self) -> Optional[bool]:
         try:
-            return bool(self._call("is_drm_ready"))
-        except BackendUnavailable:
-            return None
+            search_results = self._pv.Search(query, page=cursor)
+            if not search_results or not isinstance(search_results, dict):
+                return [], None
 
+            content = search_results.get("content", [])
+            items = self._parse_catalog_items(content)
+            next_cursor = search_results.get("next_page_cursor") or search_results.get("next")
 
-class _RpcStrategy:
-    """Fallback strategy that calls the backend through JSON-RPC."""
-
-    def __init__(self, addon_id: str) -> None:
-        self.addon_id = addon_id
-
-    def _execute(self, action: str, **params) -> Any:
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "Addons.ExecuteAddon",
-            "params": {"addonid": self.addon_id, "params": {"action": action, **{k: v for k, v in params.items() if v is not None}}},
-        }
-        response = json.loads(xbmc.executeJSONRPC(json.dumps(payload)))
-        value = response.get("result", {}).get("value")
-        if value is None:
-            raise BackendUnavailable("Backend did not return a response")
-        if isinstance(value, str):
-            try:
-                return json.loads(value)
-            except ValueError:
-                return value
-        return value
-
-    def get_home_rails(self) -> List[Dict[str, Any]]:
-        data = self._execute("home_rails")
-        if not isinstance(data, list):
-            raise BackendError("Unexpected home rails format")
-        return data
-
-    def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        data = self._execute("rail_items", rail=rail_id, cursor=cursor)
-        if isinstance(data, dict):
-            items = data.get("items") or []
-            next_cursor = data.get("next")
             return items, next_cursor
-        if isinstance(data, list):
-            return data, None
-        raise BackendError("Unexpected rail items format")
-
-    def get_playable(self, asin: str) -> Playable:
-        payload = self._execute("play", asin=asin)
-        return normalize_playable(payload)
-
-    def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        data = self._execute("search", query=query, cursor=cursor)
-        if isinstance(data, dict):
-            return data.get("items", []), data.get("next")
-        if isinstance(data, list):
-            return data, None
-        raise BackendError("Unexpected search payload")
+        except Exception as e:
+            _log(xbmc.LOGWARNING, f"Failed to execute search for '{query}': {e}")
+            return [], None
 
     def get_region_info(self) -> Dict[str, Any]:
-        data = self._execute("region")
-        return data if isinstance(data, dict) else {}
+        """Get region info."""
+        return {}
 
     def is_drm_ready(self) -> Optional[bool]:
-        try:
-            data = self._execute("is_drm_ready")
-        except BackendUnavailable:
-            return None
-        if isinstance(data, bool):
-            return data
-        if isinstance(data, dict) and "ready" in data:
-            ready = data.get("ready")
-            if isinstance(ready, bool):
-                return ready
-        return None
+        """DRM handled by Amazon addon."""
+        return True
 
 
 def discover_backend() -> Optional[str]:
@@ -217,25 +285,118 @@ def _log(level: int, message: str) -> None:
     xbmc.log(f"{LOG_PREFIX} {message}", level)
 
 
+class _JsonRPCIntegration:
+    """Integration using JSON-RPC Addons.ExecuteAddon."""
+
+    def __init__(self, addon_id: str) -> None:
+        self.addon_id = addon_id
+        if not self._is_addon_available():
+            raise BackendUnavailable(f"JSON-RPC backend {addon_id} not available.")
+
+    def _is_addon_available(self) -> bool:
+        try:
+            xbmcaddon.Addon(self.addon_id)
+            return True
+        except Exception:
+            return False
+
+    def _execute_action(self, action: str, **kwargs) -> Any:
+        params = {"action": action}
+        params.update(kwargs)
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "Addons.ExecuteAddon",
+            "params": {"addonid": self.addon_id, "params": urlencode(params)},
+            "id": 1,
+        }
+        response_str = xbmc.executeJSONRPC(json.dumps(payload))
+        response = json.loads(response_str)
+        if "error" in response:
+            raise BackendError(f"JSON-RPC error for action {action}: {response['error']}")
+
+        result = response.get("result")
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                return result
+        return result
+
+    def get_home_rails(self) -> List[Dict[str, Any]]:
+        data = self._execute_action("get_home_rails")
+        if not isinstance(data, list):
+            raise BackendError("get_home_rails returned invalid data")
+        return data
+
+    def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        params = {"rail_id": rail_id}
+        if cursor:
+            params["cursor"] = cursor
+        data = self._execute_action("get_rail_items", **params)
+        if not isinstance(data, dict):
+            raise BackendError("get_rail_items returned invalid data")
+        return data.get("items", []), data.get("next_cursor")
+
+    def get_playable(self, asin: str) -> Playable:
+        data = self._execute_action("get_playable", asin=asin)
+        if not isinstance(data, dict):
+            raise BackendError("get_playable returned invalid data")
+
+        return Playable(
+            url=data.get("url", ""),
+            manifest_type=data.get("manifest_type", "mpd"),
+            license_key=data.get("license_key"),
+            headers=data.get("headers", {}),
+            metadata=data.get("metadata", {}),
+        )
+
+    def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Search via JSON-RPC."""
+        params = {"query": query}
+        if cursor:
+            params["cursor"] = cursor
+
+        try:
+            data = self._execute_action("search", **params)
+            if not isinstance(data, dict):
+                raise BackendError("search returned invalid data")
+            return data.get("items", []), data.get("next_cursor")
+        except BackendError as e:
+            _log(xbmc.LOGWARNING, f"JSON-RPC search failed for '{query}': {e}")
+            return [], None
+
+    def get_region_info(self) -> Dict[str, Any]:
+        return {}
+
+    def is_drm_ready(self) -> Optional[bool]:
+        return True
+
+
 class PrimeAPI:
-    """Facade that selects the best available backend strategy."""
+    """Facade for Amazon VOD API integration."""
 
     def __init__(self, backend_id: Optional[str] = None) -> None:
         self.backend_id = backend_id or discover_backend()
         if not self.backend_id:
-            raise BackendUnavailable("No compatible backend installed")
-        self._strategy_label = "rpc"
+            raise BackendUnavailable("No compatible Amazon addon installed")
+
         try:
-            self._strategy = _DirectStrategy(self.backend_id)
-            self._strategy_label = "direct"
-            _log(xbmc.LOGINFO, f"Using direct backend strategy for {self.backend_id}")
+            self._strategy = _AmazonVODIntegration(self.backend_id)
+            self._strategy_name = "direct_import"
+            _log(xbmc.LOGINFO, f"PrimeHub using direct import backend API: {self.backend_id}")
         except BackendUnavailable:
-            self._strategy = _RpcStrategy(self.backend_id)
-            _log(xbmc.LOGINFO, f"Falling back to RPC backend strategy for {self.backend_id}")
+            _log(xbmc.LOGWARNING, f"Direct import failed for {self.backend_id}. Trying JSON-RPC fallback.")
+            try:
+                self._strategy = _JsonRPCIntegration(self.backend_id)
+                self._strategy_name = "json_rpc"
+                _log(xbmc.LOGINFO, f"PrimeHub using JSON-RPC backend API: {self.backend_id}")
+            except BackendUnavailable:
+                _log(xbmc.LOGERROR, "All backend integration strategies failed.")
+                raise BackendUnavailable("Could not connect to backend addon via direct import or JSON-RPC.")
 
     @property
     def strategy(self) -> str:
-        return self._strategy_label
+        return self._strategy_name
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
         data = self._strategy.get_home_rails()
@@ -250,8 +411,7 @@ class PrimeAPI:
         return self._strategy.get_playable(asin)
 
     def get_region_info(self) -> Dict[str, Any]:
-        data = self._strategy.get_region_info()
-        return data if isinstance(data, dict) else {}
+        return self._strategy.get_region_info()
 
     def is_drm_ready(self) -> Optional[bool]:
         return self._strategy.is_drm_ready()
@@ -266,12 +426,17 @@ def normalize_rail(raw: Dict[str, Any]) -> Dict[str, Any]:
         "id": str(raw.get("id") or raw.get("slug") or ""),
         "title": str(raw.get("title") or raw.get("name") or ""),
         "type": (raw.get("type") or "mixed").lower(),
+        "path": raw.get("path", ""),
     }
 
 
 def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
     asin = str(raw.get("asin") or raw.get("id") or raw.get("asin_id") or "")
     art = raw.get("art") or {}
+
+    # Check if this is a launcher item
+    plugin_url = raw.get("plugin_url")
+
     return {
         "asin": asin,
         "title": str(raw.get("title") or raw.get("name") or ""),
@@ -279,32 +444,14 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "year": _as_int(raw.get("year")),
         "duration": _as_int(raw.get("duration")),
         "art": {
-            "poster": art.get("poster") or art.get("landscape"),
-            "fanart": art.get("fanart") or art.get("background"),
-            "thumb": art.get("thumb") or art.get("poster"),
+            "poster": art.get("poster") or art.get("landscape") or "",
+            "fanart": art.get("fanart") or art.get("background") or "",
+            "thumb": art.get("thumb") or art.get("poster") or "",
         },
         "is_movie": bool(raw.get("is_movie", False) or raw.get("type") == "movie"),
         "is_show": bool(raw.get("is_show", False) or raw.get("type") == "show"),
+        "plugin_url": plugin_url,
     }
-
-
-def normalize_playable(payload: Any) -> Playable:
-    if not isinstance(payload, dict):
-        raise BackendError("Playable payload must be a mapping")
-    url = payload.get("url") or payload.get("manifest")
-    if not url:
-        raise BackendError("Playable payload missing URL")
-    headers = payload.get("headers") or {}
-    license_key = payload.get("license_key") or payload.get("license")
-    manifest_type = payload.get("manifest_type") or payload.get("type") or "mpd"
-    metadata = payload.get("metadata") or {}
-    return Playable(
-        url=str(url),
-        manifest_type=str(manifest_type),
-        license_key=str(license_key) if license_key else None,
-        headers={str(k): str(v) for k, v in headers.items()},
-        metadata=metadata,
-    )
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -322,4 +469,3 @@ def get_backend(backend_id: Optional[str] = None) -> PrimeAPI:
     if _backend_instance is None or (backend_id and _backend_instance.backend_id != backend_id):
         _backend_instance = PrimeAPI(backend_id)
     return _backend_instance
-

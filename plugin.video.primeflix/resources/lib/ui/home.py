@@ -1,4 +1,4 @@
-"""Home route building Netflix-style rails for PrimeFlix.
+"""Home route building Netflix-style rails for PrimeHub.
 
 Called from :mod:`resources.lib.router` and responsible for building the root
 listing quickly using cached backend data when available.
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - local dev fallback
             return 300
 
         def getAddonInfo(self, key: str) -> str:
-            return "PrimeFlix"
+            return "PrimeHub"
 
         def getLocalizedString(self, code: int) -> str:
             return ""
@@ -51,92 +51,72 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcaddon = type("addon", (), {"Addon": lambda *a, **k: _Addon()})  # type: ignore
 
 from ..backend import BackendError, BackendUnavailable, get_backend
-from ..cache import get_cache
+from ..cache import Cache, get_cache
 from ..perf import timed
 from ..preflight import PreflightError, ensure_ready_or_raise
 
-DEFAULT_CACHE_TTL = 300
 
-
-def _get_setting_bool(addon, key: str, default: bool) -> bool:
+def fetch_home_rails(addon: xbmcaddon.Addon, cache: Cache, backend_id: str) -> List[Dict[str, Any]]:
+    """Fetch home rails from cache or backend."""
+    cache_key = "home:rails"
     try:
-        return addon.getSettingBool(key)
+        use_cache = addon.getSettingBool("use_cache")
+        cache_ttl = addon.getSettingInt("cache_ttl")
     except Exception:
-        try:
-            return str(addon.getSetting(key)).lower() == "true"
-        except Exception:
-            return default
+        use_cache = True
+        cache_ttl = 300
 
+    if use_cache:
+        cached = cache.get(cache_key, ttl_seconds=cache_ttl)
+        if cached:
+            return cached
 
-def _get_setting_int(addon, key: str, default: int) -> int:
+    backend = get_backend(backend_id)
     try:
-        return int(addon.getSettingInt(key))
-    except Exception:
-        try:
-            return int(addon.getSetting(key))
-        except Exception:
-            return default
+        rails = backend.get_home_rails()
+        if use_cache:
+            cache.set(cache_key, rails, ttl_seconds=cache_ttl)
+        return rails
+    except (BackendError, BackendUnavailable):
+        amazon_addon_id = backend.backend_id
+        return [
+            {"id": "watchlist", "title": "My Watchlist", "plugin_url": f"plugin://{amazon_addon_id}/?mode=Watchlist"},
+            {"id": "browse", "title": "Browse All", "plugin_url": f"plugin://{amazon_addon_id}/"},
+        ]
 
 
 @timed("home_build")
 def show_home(context) -> None:
+    """Build and display PrimeHub home with Netflix-style rails."""
     backend_id = ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
     cache = get_cache()
-    rails = fetch_home_rails(addon, cache, backend_id)
-    search_label = _safe_get_string(addon, 30000, "Search")
-    _build_directory(context, rails, search_label)
 
-
-def fetch_home_rails(addon, cache, backend_id: str) -> List[Dict[str, Any]]:
-    use_cache = _get_setting_bool(addon, "use_cache", True)
-    cache_ttl = _get_setting_int(addon, "cache_ttl", DEFAULT_CACHE_TTL)
-
-    rails: Optional[List[Dict[str, Any]]] = None
-    cache_key = "home_rails"
-    if use_cache:
-        rails = cache.get(cache_key, ttl_seconds=cache_ttl)
-
-    if rails is None:
-        backend = get_backend(backend_id)
-        try:
-            rails = backend.get_home_rails()
-            if use_cache:
-                cache.set(cache_key, rails, cache_ttl)
-        except (BackendUnavailable, BackendError) as exc:
-            raise PreflightError(str(exc))
-
-    return rails or []
-
-
-def _build_directory(context, rails: List[Dict[str, Any]], search_label: str) -> None:
     xbmcplugin.setContent(context.handle, "videos")
-    items = []
+
+    rails = fetch_home_rails(addon, cache, backend_id)
+    addon_fanart = addon.getAddonInfo('fanart')
+
+    list_items = []
     for rail in rails:
-        url = context.build_url(action="list", rail=rail.get("id", ""))
         li = xbmcgui.ListItem(label=rail.get("title", ""))
-        li.setInfo(
-            "video",
-            {
-                "title": rail.get("title", ""),
-                "plot": rail.get("title", ""),
-            },
-        )
-        items.append((url, li, True))
+        li.setInfo("video", {"title": rail.get("title", ""), "plot": f"Browse {rail.get('title', 'content')}"})
+        li.setArt({'icon': 'DefaultFolder.png', 'fanart': addon_fanart})
 
-    # Search shortcut always last
+        if "plugin_url" in rail:
+            url = rail["plugin_url"]
+        else:
+            url = context.build_url(action="list", rail=rail.get("id"))
+        list_items.append((url, li, True))
+
+    search_li = xbmcgui.ListItem(label=addon.getLocalizedString(30000))
+    search_li.setArt({'icon': 'DefaultAddonSearch.png', 'fanart': addon_fanart})
     search_url = context.build_url(action="search")
-    search_item = xbmcgui.ListItem(label=search_label)
-    search_item.setInfo("video", {"title": search_label})
-    items.append((search_url, search_item, True))
+    list_items.append((search_url, search_li, True))
 
-    xbmcplugin.addDirectoryItems(context.handle, items)
+    diag_li = xbmcgui.ListItem(label=addon.getLocalizedString(30020))
+    diag_li.setArt({'icon': 'DefaultAddonSettings.png', 'fanart': addon_fanart})
+    diag_url = context.build_url(action="diagnostics")
+    list_items.append((diag_url, diag_li, True))
 
-
-def _safe_get_string(addon, code: int, fallback: str) -> str:
-    try:
-        value = addon.getLocalizedString(code)
-        return value or fallback
-    except Exception:
-        return fallback
-
+    xbmcplugin.addDirectoryItems(context.handle, list_items)

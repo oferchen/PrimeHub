@@ -64,12 +64,15 @@ def show_results(context) -> None:
 
     results: List[Dict[str, Any]] = []
 
+    # Clear cache for home rails once before starting to ensure the first run is cold
     cache.clear_prefix("home")
+
     for idx in range(3):
         warm = idx > 0
         start = time.perf_counter()
-        cache.clear_prefix("rail:") if not warm else None
+
         fetch_home_rails(addon, cache, backend_id)
+
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         log_duration("home", elapsed_ms, warm=warm, warm_threshold_ms=300.0, cold_threshold_ms=1500.0)
         results.append({

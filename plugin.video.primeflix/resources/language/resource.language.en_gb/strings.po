@@ -1,5 +1,5 @@
 msgid "#10000"
-msgstr "PrimeFlix Settings"
+msgstr "PrimeHub Settings"
 
 msgid "#10010"
 msgstr "Preferred region"
@@ -51,3 +51,9 @@ msgstr "Search"
 
 msgid "#30010"
 msgstr "More…"
+
+msgid "#30020"
+msgstr "Diagnostics"
+
+msgid "#30030"
+msgstr "Search Prime Video"
