@@ -34,8 +34,8 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcplugin = _Plugin()  # type: ignore
 
 from .preflight import PreflightError, show_preflight_error
-from .ui import diagnostics, home, listing, playback
-
+from .ui import diagnostics, home, listing, playback, login
+from .backend.prime_api import get_backend
 
 @dataclass
 class PluginContext:
@@ -55,9 +55,21 @@ def dispatch(base_url: str, param_string: str) -> None:
     action = params.get("action")
     context = PluginContext(base_url, handle)
 
+    # --- Authentication Check ---
+    # All actions except 'login' require an authenticated session.
+    backend = get_backend()
+    if action != "login" and not backend.is_logged_in():
+        # If not logged in, force the login screen.
+        # If login is successful, we can proceed. Otherwise, we exit.
+        if not login.show_login_screen():
+            return # Exit if login is cancelled or fails
+
     try:
-        if not action:
-            home.show_home(context)
+        if action == "login":
+            login.show_login_screen()
+        elif action == "logout":
+            backend.logout()
+            # Optionally, show a notification to the user
         elif action == "list":
             rail_id = params.get("rail", "")
             cursor = params.get("cursor")
@@ -73,8 +85,9 @@ def dispatch(base_url: str, param_string: str) -> None:
             query = params.get("query")
             cursor = params.get("cursor")
             listing.show_search(context, query, cursor)
-        else:
+        else: # Default action
             home.show_home(context)
+
     except PreflightError as exc:
         show_preflight_error(exc)
         xbmcplugin.endOfDirectory(handle, succeeded=False)

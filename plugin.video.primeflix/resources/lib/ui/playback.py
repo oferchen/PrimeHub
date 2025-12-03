@@ -45,8 +45,8 @@ INPUTSTREAM_ID = "inputstream.adaptive"
 
 @timed("playback_handoff")
 def play(context, asin: str) -> None:
-    backend_id = ensure_ready_or_raise()
-    backend = get_backend(backend_id)
+    ensure_ready_or_raise()
+    backend = get_backend()
     try:
         playable = backend.get_playable(asin)
     except (BackendUnavailable, BackendError) as exc:

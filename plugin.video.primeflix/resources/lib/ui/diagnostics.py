@@ -59,8 +59,8 @@ from .home import fetch_home_rails
 
 @timed("diagnostics")
 def show_results(context) -> None:
-    backend_id = ensure_ready_or_raise()
-    backend = get_backend(backend_id)
+    ensure_ready_or_raise()
+    backend = get_backend()
     cache = get_cache()
     addon = xbmcaddon.Addon()
 
@@ -73,7 +73,7 @@ def show_results(context) -> None:
         warm = idx > 0
         start = time.perf_counter()
 
-        fetch_home_rails(addon, cache, backend_id)
+        fetch_home_rails(addon, cache)
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         log_duration(

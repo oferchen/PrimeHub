@@ -37,15 +37,31 @@ msgstr "Cache TTL (seconds)"
 msgid "#10050"
 msgstr "Enable performance logging"
 
+# Login Screen Strings
+msgid "#32001"
+msgstr "Username"
+msgid "#32002"
+msgstr "Password"
+msgid "#32003"
+msgstr "Login Successful"
+msgid "#32004"
+msgstr "You are now logged in."
+msgid "#32005"
+msgstr "Login Failed"
+msgid "#32006"
+msgstr "Please check your credentials."
+
+# Preflight/Error messages (re-purposed for native backend)
 msgid "#21090"
-msgstr "Prime Video backend not detected. Please install and sign in to a compatible Amazon/Prime Video add-on."
+msgstr "Please log in via the add-on settings or the login menu."
 
 msgid "#21100"
 msgstr "Required component inputstream.adaptive is missing or disabled. Enable it in Kodi Add-ons."
 
 msgid "#21110"
-msgstr "DRM session is not ready. Open the Prime Video add-on and complete login or Widevine setup."
+msgstr "A required DRM component is not ready. Please ensure Widevine is installed and up-to-date."
 
+# UI Strings
 msgid "#30000"
 msgstr "Search"
 
@@ -58,6 +74,7 @@ msgstr "Diagnostics"
 msgid "#30030"
 msgstr "Search Prime Video"
 
+# Rail Categories
 msgid "#40000"
 msgstr "Continue Watching"
 

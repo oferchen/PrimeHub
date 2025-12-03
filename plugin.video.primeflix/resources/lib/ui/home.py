@@ -59,7 +59,7 @@ from ..preflight import PreflightError, ensure_ready_or_raise
 
 
 def fetch_home_rails(
-    addon: xbmcaddon.Addon, cache: Cache, backend_id: str
+    addon: xbmcaddon.Addon, cache: Cache
 ) -> List[Dict[str, Any]]:
     """Fetch home rails from cache or backend, mapping to Netflix-style categories."""
     cache_key = "home:rails"
@@ -77,21 +77,12 @@ def fetch_home_rails(
 
     raw_rails: List[Dict[str, Any]]
     try:
-        backend = get_backend(backend_id)
+        backend = get_backend()
         raw_rails = backend.get_home_rails()
     except (BackendError, BackendUnavailable):
-        amazon_addon_id = backend.backend_id
+        # Fallback for when the native backend fails to return rails
         raw_rails = [
-            {
-                "id": "watchlist",
-                "title": "My Watchlist",
-                "plugin_url": f"plugin://{amazon_addon_id}/?mode=Watchlist",
-            },
-            {
-                "id": "browse",
-                "title": "Browse All",
-                "plugin_url": f"plugin://{amazon_addon_id}/",
-            },
+            {"id": "login", "title": "Login Required", "plugin_url": "plugin://plugin.video.primeflix/?action=login"},
         ]
         if use_cache:
             cache.set(cache_key, raw_rails, ttl_seconds=cache_ttl)
@@ -162,13 +153,13 @@ def fetch_home_rails(
 @timed("home_build")
 def show_home(context) -> None:
     """Build and display PrimeHub home with Netflix-style rails."""
-    backend_id = ensure_ready_or_raise()
+    ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
     cache = get_cache()
 
     xbmcplugin.setContent(context.handle, "videos")
 
-    rails = fetch_home_rails(addon, cache, backend_id)
+    rails = fetch_home_rails(addon, cache)
     addon_fanart = addon.getAddonInfo("fanart")
 
     list_items = []

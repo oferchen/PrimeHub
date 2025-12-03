@@ -64,7 +64,7 @@ DEFAULT_CACHE_TTL = 300
 
 
 def show_list(context, rail_id: str, cursor: Optional[str] = None) -> None:
-    backend_id = ensure_ready_or_raise()
+    ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
     cache = get_cache()
     cache_ttl = _get_cache_ttl(addon)
@@ -83,7 +83,7 @@ def show_list(context, rail_id: str, cursor: Optional[str] = None) -> None:
         items = cached.get("items", [])
         next_cursor = cached.get("next")
     else:
-        backend = get_backend(backend_id)
+        backend = get_backend()
         try:
             items, next_cursor = backend.get_rail_items(rail_id, cursor)
         except (BackendUnavailable, BackendError) as exc:
@@ -143,12 +143,12 @@ def _render_items(
 
 
 def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
-    backend_id = ensure_ready_or_raise()
+    ensure_ready_or_raise()
     if not query:
         query = _prompt_search()
     if not query:
         return
-    backend = get_backend(backend_id)
+    backend = get_backend()
     try:
         items, next_cursor = backend.search(query, cursor)
     except (BackendUnavailable, BackendError) as exc:
