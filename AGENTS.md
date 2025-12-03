@@ -57,57 +57,44 @@ All agents must strictly follow:
 - Final, authoritative **module API design** and function signatures.
 - A short integration note at the top of each module (docstring/comment) explaining its role and callers.
 
----
-
 ## 2. Agent: Backend Integration
 
 **Alias:** `backend-agent`  
-**Goal:** Implement `backend/prime_api.py` to wrap the existing Prime Video add-on with a **dual-strategy binding** (direct import first, plugin/JSON-RPC fallback).
+**Goal:** Implement `backend/prime_api.py` as a **native backend** for Prime Video, directly communicating with Amazon's APIs, **without depending on an existing Prime Video add-on**. This module demonstrates the use of several design patterns: Singleton, Facade, Strategy, and Adapter.
 
 ### Responsibilities
 
 - Implement `prime_api.py` with:
 
-  - **Direct import strategy** (preferred):
-    - Attempt to import the existing Prime/Amazon add-on’s modules.
-    - Expose functions such as:
-      - `get_home_rails()`
-      - `get_rail_items(rail_id, page)`
-      - `get_playable(asin)`
-      - `get_region_info()`
-      - `is_drm_ready()`
-    - Normalize data into internal models:
+  - **Native API Strategy (`_NativeAPIIntegration`):**
+    - Handle **Amazon Authentication**: Implement login/logout, manage user sessions (cookies, tokens), and ensure session persistence (saving/loading data to/from disk).
+    - Make **Direct API Calls**: Interact with Amazon's Prime Video APIs to fetch content (home rails, rail items, search results, playable media information). *Note: This requires detailed investigation of Amazon's undocumented API endpoints.*
+    - **Parse API Responses**: Process JSON responses from Amazon's APIs.
+    - **Normalize Data**: Convert raw API data into internal models:
       - Rails: `{"id": str, "title": str, "type": "movies"/"tv"/"mixed"}`
       - Items: `{"asin": str, "title": str, "plot": str, "year": int|None, "duration": int|None, "art": {...}, "is_movie": bool, "is_show": bool}`
+      - Playable: `{"url": str, "manifest_type": str, "license_key": str|None, "headers": {...}, "metadata": {...}}`
+    - Expose region/DRM readiness info (`get_region_info()`, `is_drm_ready()`) via direct API calls.
+    - **Dependency Note:** This implementation requires the `requests` Python library, which must be bundled with the add-on.
 
-  - **Indirect strategy** (fallback):
-    - When direct import fails, call the backend via:
-      - Kodi plugin URL, or
-      - Kodi JSON-RPC (`Addons.ExecuteAddon`, etc.).
-    - Parse returned data into the **same internal models** as above.
+  - **Facade (`PrimeAPI`):** Provide a simplified, unified interface to the underlying native API strategy.
+  - **Singleton (`get_backend()`):** Ensure only a single instance of `PrimeAPI` is created and managed.
+  - **Adapter (`normalize_rail`, `normalize_item`):** Convert backend data formats to the UI's expected format.
 
-- Implement **automatic strategy selection**:
-  - Try direct import.
-  - If it fails, fallback to indirect.
-  - Always log which path is currently used.
-
-- Provide a small set of **backend-facing exceptions** (e.g. `BackendUnavailable`, `BackendError`) that callers can handle.
-
-- Expose region/DRM readiness info to `preflight.py`.
+- Provide a small set of **backend-facing exceptions** (e.g. `BackendError`, `AuthenticationError`) that callers can handle.
 
 ### Input
 
-- Architect-defined API contracts.
-- Knowledge of the existing Prime add-on (imports and/or plugin URLs).
+- Architect-defined API contracts (now updated for native integration).
+- Knowledge of Amazon Prime Video API structure (requires external investigation).
 
 ### Output
 
 - `resources/lib/backend/prime_api.py` containing:
-  - Complete dual-strategy binding.
+  - Complete native backend implementation (authentication, content fetching, session management).
   - Normalized data types for rails/items/playable.
-  - Logging of selected strategy and errors.
-
----
+  - Logging of operations and errors.
+  - Explicit use of Singleton, Facade, Strategy, and Adapter patterns.
 
 ## 3. Agent: Preflight & Capability
 

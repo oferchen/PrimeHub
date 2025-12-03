@@ -11,8 +11,11 @@
         <summary lang="en_GB">Simplified launcher for Amazon Prime Video</summary>
         <description lang="en_GB">
             PrimeHub provides a clean, organized menu for accessing Amazon Prime Video content.
-            Requires an installed Amazon Prime Video add-on (such as Amazon VOD).
-            Configure and sign in to the Amazon addon first; PrimeHub provides a streamlined
+            This add-on now includes a native backend implementation that directly communicates
+            with Amazon's APIs, removing the dependency on external Amazon VOD add-ons.
+            *Note: This native backend relies on the 'requests' Python library, which must be
+            bundled with the add-on.*
+            Configure and sign in via the add-on's login menu. PrimeHub provides a streamlined
             entry point and does not bypass DRM.
         </description>
         <platform>all</platform>
