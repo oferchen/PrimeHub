@@ -42,6 +42,19 @@ BACKEND_CANDIDATES = (
     "plugin.video.primevideo",
 )
 
+REGION_MAP = {
+    "0": "us",
+    "1": "uk",
+    "2": "de",
+    "3": "jp",
+}
+
+RESOLUTION_MAP = {
+    "0": "auto",
+    "1": "1080p",
+    "2": "720p",
+}
+
 
 class BackendUnavailable(RuntimeError):
     """Raised when the Prime backend cannot be reached."""
@@ -63,8 +76,9 @@ class Playable:
 class _AmazonVODIntegration:
     """Integration using Amazon VOD's internal API."""
 
-    def __init__(self, addon_id: str) -> None:
+    def __init__(self, addon_id: str, addon: xbmcaddon.Addon) -> None:
         self.addon_id = addon_id
+        self._addon = addon
         self._pv = None
         self._globals = None
         self._init_amazon_modules()
@@ -108,6 +122,16 @@ class _AmazonVODIntegration:
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
         """Get rails from Amazon VOD catalog."""
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
+        # For direct import, we assume the underlying PrimeVideo object might be configured
+        # with region/resolution settings at a higher level, or its methods take them.
+        # As we don't know the exact API of self._pv, we read the settings here
+        # but do not modify the calls to self._pv methods yet.
+        # This will be addressed in the "Validate assumptions" task.
         if not self._pv or not hasattr(self._pv, '_catalog'):
             return self._get_default_rails()
 
@@ -127,7 +151,7 @@ class _AmazonVODIntegration:
         if not rails:
             rails = self._get_default_rails()
 
-        _log(xbmc.LOGDEBUG, f"Found {len(rails)} rails in Amazon VOD catalog")
+        _log(xbmc.LOGDEBUG, f"Found {len(rails)} rails in Amazon VOD catalog (Region: {region_str}, Resolution: {resolution_str})")
         return rails
 
     def _get_default_rails(self) -> List[Dict[str, Any]]:
@@ -140,29 +164,31 @@ class _AmazonVODIntegration:
 
     def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """Fetch items for a rail from Amazon VOD catalog."""
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
         if not self._pv:
             return [], None
 
         try:
-            # Try to browse the catalog path
             if hasattr(self._pv, '_catalog'):
                 catalog = getattr(self._pv, '_catalog', {})
                 root = catalog.get('root', {})
                 node = root.get(rail_id, {})
 
-                # Extract items from node if it has them
                 if isinstance(node, dict):
                     content = node.get('content', [])
                     items = self._parse_catalog_items(content)
                     if items:
                         return items, None
 
-            # Fallback: provide plugin URL to open Amazon VOD
-            return self._create_launcher_item(rail_id), None
+            return self._create_launcher_item(rail_id)
 
         except Exception as e:
             _log(xbmc.LOGWARNING, f"Failed to get items for {rail_id}: {e}")
-            return self._create_launcher_item(rail_id), None
+            return self._create_launcher_item(rail_id)
 
     def _parse_catalog_items(self, content: List[Any]) -> List[Dict[str, Any]]:
         """Parse catalog items into normalized format."""
@@ -208,12 +234,21 @@ class _AmazonVODIntegration:
 
     def get_playable(self, asin: str) -> Playable:
         """Get playback info from Amazon VOD."""
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
         if not self._pv or not hasattr(self._pv, "GetStream"):
             _log(xbmc.LOGWARNING, "Backend does not support direct playback. Falling back to plugin URL.")
             raise BackendError(f"Use Amazon VOD for playback: plugin://{self.addon_id}/?mode=PlayVideo&asin={asin}")
 
         try:
+            # We assume GetStream might accept region/resolution, but as we don't know the exact API,
+            # we just log the settings and pass a play=False parameter.
             stream_data = self._pv.GetStream(asin=asin, play=False)
+            _log(xbmc.LOGDEBUG, f"GetStream for {asin} (Region: {region_str}, Resolution: {resolution_str})")
+
             if not stream_data or not isinstance(stream_data, dict):
                 raise BackendError("Failed to get stream data from backend.")
 
@@ -245,11 +280,18 @@ class _AmazonVODIntegration:
 
     def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """Search via Amazon VOD."""
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
         if not self._pv or not hasattr(self._pv, "Search"):
             return [], None
 
         try:
             search_results = self._pv.Search(query, page=cursor)
+            _log(xbmc.LOGDEBUG, f"Search for '{query}' (Region: {region_str}, Resolution: {resolution_str})")
+
             if not search_results or not isinstance(search_results, dict):
                 return [], None
 
@@ -263,12 +305,28 @@ class _AmazonVODIntegration:
             return [], None
 
     def get_region_info(self) -> Dict[str, Any]:
-        """Get region info."""
+        """Get region info from Amazon VOD."""
+        if not self._pv or not hasattr(self._pv, 'getRegion'):
+            return {}
+
+        try:
+            region_data = self._pv.getRegion()
+            if isinstance(region_data, dict):
+                return region_data
+        except Exception as e:
+            _log(xbmc.LOGWARNING, f"Failed to get region info: {e}")
         return {}
 
     def is_drm_ready(self) -> Optional[bool]:
         """DRM handled by Amazon addon."""
-        return True
+        if not self._pv or not hasattr(self._pv, 'isDRMReady'):
+            return None
+
+        try:
+            return self._pv.isDRMReady()
+        except Exception as e:
+            _log(xbmc.LOGWARNING, f"Failed to get DRM readiness: {e}")
+        return None
 
 
 def discover_backend() -> Optional[str]:
@@ -288,8 +346,9 @@ def _log(level: int, message: str) -> None:
 class _JsonRPCIntegration:
     """Integration using JSON-RPC Addons.ExecuteAddon."""
 
-    def __init__(self, addon_id: str) -> None:
+    def __init__(self, addon_id: str, addon: xbmcaddon.Addon) -> None:
         self.addon_id = addon_id
+        self._addon = addon
         if not self._is_addon_available():
             raise BackendUnavailable(f"JSON-RPC backend {addon_id} not available.")
 
@@ -323,22 +382,40 @@ class _JsonRPCIntegration:
         return result
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
-        data = self._execute_action("get_home_rails")
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
+        data = self._execute_action("get_home_rails", region=region_str, resolution=resolution_str)
         if not isinstance(data, list):
             raise BackendError("get_home_rails returned invalid data")
         return data
 
     def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
         params = {"rail_id": rail_id}
         if cursor:
             params["cursor"] = cursor
+        params["region"] = region_str
+        params["resolution"] = resolution_str
+
         data = self._execute_action("get_rail_items", **params)
         if not isinstance(data, dict):
             raise BackendError("get_rail_items returned invalid data")
         return data.get("items", []), data.get("next_cursor")
 
     def get_playable(self, asin: str) -> Playable:
-        data = self._execute_action("get_playable", asin=asin)
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
+        data = self._execute_action("get_playable", asin=asin, region=region_str, resolution=resolution_str)
         if not isinstance(data, dict):
             raise BackendError("get_playable returned invalid data")
 
@@ -352,9 +429,16 @@ class _JsonRPCIntegration:
 
     def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """Search via JSON-RPC."""
+        region_code = self._addon.getSetting("region")
+        max_res_code = self._addon.getSetting("max_resolution")
+        region_str = REGION_MAP.get(region_code, "us")
+        resolution_str = RESOLUTION_MAP.get(max_res_code, "auto")
+
         params = {"query": query}
         if cursor:
             params["cursor"] = cursor
+        params["region"] = region_str
+        params["resolution"] = resolution_str
 
         try:
             data = self._execute_action("search", **params)
@@ -366,28 +450,54 @@ class _JsonRPCIntegration:
             return [], None
 
     def get_region_info(self) -> Dict[str, Any]:
+        """Get region info via JSON-RPC."""
+        try:
+            data = self._execute_action("get_region_info")
+            if isinstance(data, dict):
+                return data
+        except BackendError as e:
+            _log(xbmc.LOGWARNING, f"JSON-RPC get_region_info failed: {e}")
         return {}
 
     def is_drm_ready(self) -> Optional[bool]:
-        return True
+        """DRM readiness via JSON-RPC."""
+        try:
+            data = self._execute_action("is_drm_ready")
+            if isinstance(data, bool):
+                return data
+            elif isinstance(data, dict) and 'ready' in data and isinstance(data['ready'], bool):
+                return data['ready']
+        except BackendError as e:
+            _log(xbmc.LOGWARNING, f"JSON-RPC is_drm_ready failed: {e}")
+        return None
+
+
+def get_backend(backend_id: Optional[str] = None) -> PrimeAPI:
+    global _backend_instance
+    if _backend_instance is None or (backend_id and _backend_instance.backend_id != backend_id):
+        addon = xbmcaddon.Addon()
+        _backend_instance = PrimeAPI(backend_id, addon)
+    return _backend_instance
 
 
 class PrimeAPI:
     """Facade for Amazon VOD API integration."""
 
-    def __init__(self, backend_id: Optional[str] = None) -> None:
+    def __init__(self, backend_id: Optional[str] = None, addon: Optional[xbmcaddon.Addon] = None) -> None:
         self.backend_id = backend_id or discover_backend()
         if not self.backend_id:
             raise BackendUnavailable("No compatible Amazon addon installed")
 
+        self._addon = addon or xbmcaddon.Addon()
+
         try:
-            self._strategy = _AmazonVODIntegration(self.backend_id)
+            self._strategy = _AmazonVODIntegration(self.backend_id, self._addon)
             self._strategy_name = "direct_import"
             _log(xbmc.LOGINFO, f"PrimeHub using direct import backend API: {self.backend_id}")
         except BackendUnavailable:
             _log(xbmc.LOGWARNING, f"Direct import failed for {self.backend_id}. Trying JSON-RPC fallback.")
             try:
-                self._strategy = _JsonRPCIntegration(self.backend_id)
+                self._strategy = _JsonRPCIntegration(self.backend_id, self._addon)
                 self._strategy_name = "json_rpc"
                 _log(xbmc.LOGINFO, f"PrimeHub using JSON-RPC backend API: {self.backend_id}")
             except BackendUnavailable:
@@ -462,10 +572,3 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 _backend_instance: Optional[PrimeAPI] = None
-
-
-def get_backend(backend_id: Optional[str] = None) -> PrimeAPI:
-    global _backend_instance
-    if _backend_instance is None or (backend_id and _backend_instance.backend_id != backend_id):
-        _backend_instance = PrimeAPI(backend_id)
-    return _backend_instance

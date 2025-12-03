@@ -57,7 +57,7 @@ from ..preflight import PreflightError, ensure_ready_or_raise
 
 
 def fetch_home_rails(addon: xbmcaddon.Addon, cache: Cache, backend_id: str) -> List[Dict[str, Any]]:
-    """Fetch home rails from cache or backend."""
+    """Fetch home rails from cache or backend, mapping to Netflix-style categories."""
     cache_key = "home:rails"
     try:
         use_cache = addon.getSettingBool("use_cache")
@@ -71,18 +71,60 @@ def fetch_home_rails(addon: xbmcaddon.Addon, cache: Cache, backend_id: str) -> L
         if cached:
             return cached
 
-    backend = get_backend(backend_id)
+    raw_rails: List[Dict[str, Any]]
     try:
-        rails = backend.get_home_rails()
-        if use_cache:
-            cache.set(cache_key, rails, ttl_seconds=cache_ttl)
-        return rails
+        backend = get_backend(backend_id)
+        raw_rails = backend.get_home_rails()
     except (BackendError, BackendUnavailable):
         amazon_addon_id = backend.backend_id
-        return [
+        raw_rails = [
             {"id": "watchlist", "title": "My Watchlist", "plugin_url": f"plugin://{amazon_addon_id}/?mode=Watchlist"},
             {"id": "browse", "title": "Browse All", "plugin_url": f"plugin://{amazon_addon_id}/"},
         ]
+        if use_cache:
+            cache.set(cache_key, raw_rails, ttl_seconds=cache_ttl)
+        return raw_rails
+
+    # Map raw rails to desired Netflix-style categories
+    mapped_rails: List[Dict[str, Any]] = []
+    found_raw_rails = {rail["id"]: rail for rail in raw_rails}
+
+    # Define desired categories with localized titles
+    DESIRED_RAIL_CATEGORIES = [
+        {"id": "continue_watching", "title_id": 40000, "default_title": "Continue Watching"},
+        {"id": "prime_originals", "title_id": 40001, "default_title": "Prime Originals"},
+        {"id": "movies", "title_id": 40002, "default_title": "Movies"},
+        {"id": "tv", "title_id": 40003, "default_title": "TV"},
+        {"id": "recommended_for_you", "title_id": 40004, "default_title": "Recommended For You"},
+    ]
+
+    for category in DESIRED_RAIL_CATEGORIES:
+        localized_title = addon.getLocalizedString(category["title_id"]) or category["default_title"]
+        if category["id"] in found_raw_rails:
+            rail = found_raw_rails[category["id"]]
+            mapped_rails.append({
+                "id": rail["id"],
+                "title": rail.get("title", localized_title), # Prefer backend title if available
+                "type": rail.get("type", "mixed"),
+                "path": rail.get("path", ""),
+            })
+        else:
+            mapped_rails.append({
+                "id": category["id"],
+                "title": localized_title,
+                "type": "mixed", # Default type for placeholder
+                "path": "", # Placeholder path
+            })
+
+    # Append any other rails that were returned by the backend but not in our desired list
+    existing_mapped_ids = {r["id"] for r in mapped_rails}
+    for rail in raw_rails:
+        if rail["id"] not in existing_mapped_ids:
+            mapped_rails.append(rail)
+
+    if use_cache:
+        cache.set(cache_key, mapped_rails, ttl_seconds=cache_ttl)
+    return mapped_rails
 
 
 @timed("home_build")

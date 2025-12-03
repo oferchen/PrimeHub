@@ -57,3 +57,18 @@ msgstr "Diagnostics"
 
 msgid "#30030"
 msgstr "Search Prime Video"
+
+msgid "#40000"
+msgstr "Continue Watching"
+
+msgid "#40001"
+msgstr "Prime Originals"
+
+msgid "#40002"
+msgstr "Movies"
+
+msgid "#40003"
+msgstr "TV"
+
+msgid "#40004"
+msgstr "Recommended For You"
