@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover - local dev fallback
         },
     )  # type: ignore
 
-from ..backend import BackendError, BackendUnavailable, get_backend
+from ..backend.prime_api import BackendError, BackendUnavailable, get_backend
 from ..cache import get_cache
 from ..perf import log_duration, timed
 from ..preflight import PreflightError, ensure_ready_or_raise

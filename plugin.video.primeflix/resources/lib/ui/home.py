@@ -52,7 +52,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcplugin = _XBMCPlugin()  # type: ignore
     xbmcaddon = type("addon", (), {"Addon": lambda *a, **k: _Addon()})  # type: ignore
 
-from ..backend import BackendError, BackendUnavailable, get_backend
+from ..backend.prime_api import BackendError, BackendUnavailable, get_backend
 from ..cache import Cache, get_cache
 from ..perf import timed
 from ..preflight import PreflightError, ensure_ready_or_raise

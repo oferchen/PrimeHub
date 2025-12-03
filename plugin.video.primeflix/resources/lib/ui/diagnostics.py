@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover - local dev fallback
         },
     )  # type: ignore
 
-from ..backend import get_backend
+from ..backend.prime_api import get_backend
 from ..cache import get_cache
 from ..perf import log_duration, timed
 from ..preflight import ensure_ready_or_raise

@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - local dev fallback
     xbmcgui = type("xbmcgui", (), {"ListItem": _ListItem})  # type: ignore
     xbmcplugin = _Plugin()  # type: ignore
 
-from ..backend import BackendError, BackendUnavailable, Playable, get_backend
+from ..backend.prime_api import BackendError, BackendUnavailable, Playable, get_backend
 from ..perf import timed
 from ..preflight import PreflightError, ensure_ready_or_raise
 
