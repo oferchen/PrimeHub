@@ -3,6 +3,7 @@
 Invoked from :mod:`resources.lib.router` to run repeated home builds and show
 timing/strategy information in a user-visible listing.
 """
+
 from __future__ import annotations
 
 import time
@@ -13,6 +14,7 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcgui
     import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _ListItem:
         def __init__(self, label=""):
             self.label = label
@@ -74,11 +76,22 @@ def show_results(context) -> None:
         fetch_home_rails(addon, cache, backend_id)
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        log_duration("home", elapsed_ms, warm=warm, warm_threshold_ms=300.0, cold_threshold_ms=1500.0)
-        results.append({
-            "label": f"Run {idx + 1}: {elapsed_ms:.0f} ms ({'warm' if warm else 'cold'}, strategy={backend.strategy})",
-            "elapsed": elapsed_ms,
-        })
+        log_duration(
+            "home",
+            elapsed_ms,
+            warm=warm,
+            warm_threshold_ms=300.0,
+            cold_threshold_ms=1500.0,
+        )
+        results.append(
+            {
+                "label": (
+                    f"Run {idx + 1}: {elapsed_ms:.0f} ms ("
+                    f"{'warm' if warm else 'cold'}, strategy={backend.strategy})"
+                ),
+                "elapsed": elapsed_ms,
+            }
+        )
 
     _render_results(context, results)
 
@@ -91,4 +104,3 @@ def _render_results(context, results: List[Dict[str, Any]]) -> None:
         li.setInfo("video", {"title": result["label"], "plot": result["label"]})
         items.append(("", li, False))
     xbmcplugin.addDirectoryItems(context.handle, items)
-

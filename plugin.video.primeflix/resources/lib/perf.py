@@ -6,6 +6,7 @@ used by routing, backend bindings, and UI modules. Logging honours the
 still emitting warnings when thresholds are exceeded. The module deliberately
 keeps dependencies minimal so imports remain cheap at startup.
 """
+
 from __future__ import annotations
 
 import functools
@@ -16,6 +17,7 @@ try:  # pragma: no cover - Kodi runtime
     import xbmc
     import xbmcaddon
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _XBMCStub:
         LOGDEBUG = 0
         LOGINFO = 1

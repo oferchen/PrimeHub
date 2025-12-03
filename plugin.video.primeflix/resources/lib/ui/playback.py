@@ -4,6 +4,7 @@ Invoked from :mod:`resources.lib.router` when the user selects a playable
 item. The function constructs a configured ListItem using the backend-provided
 manifest and passes it to ``setResolvedUrl``.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -12,6 +13,7 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcgui
     import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _ListItem:
         def __init__(self, label=""):
             self.label = label
@@ -68,4 +70,3 @@ def _build_list_item(playable: Playable):
     li.setProperty("path", playable.url)
     li.setInfo("video", playable.metadata or {})
     return li
-

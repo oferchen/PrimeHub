@@ -3,6 +3,7 @@
 Used by backend and UI layers to avoid repeated calls when navigating rails,
 listings, playback resolution, and diagnostics runs.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,6 +17,7 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcvfs
     import xbmcaddon
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _VFSStub:
         def exists(self, path: str) -> bool:
             return os.path.exists(path)
@@ -106,7 +108,12 @@ class Cache:
 
     def set(self, key: str, data: Any, ttl_seconds: int) -> None:
         path = self._filepath(key)
-        payload = {"timestamp": time.time(), "ttl": ttl_seconds, "key": key, "data": data}
+        payload = {
+            "timestamp": time.time(),
+            "ttl": ttl_seconds,
+            "key": key,
+            "data": data,
+        }
         with self._lock:
             with xbmcvfs.open(path, "w") as stream:  # type: ignore[arg-type]
                 json.dump(payload, stream)

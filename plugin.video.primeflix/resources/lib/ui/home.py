@@ -3,6 +3,7 @@
 Called from :mod:`resources.lib.router` and responsible for building the root
 listing quickly using cached backend data when available.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcgui
     import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _ListItem:
         def __init__(self, label=""):
             self.label = label
@@ -56,7 +58,9 @@ from ..perf import timed
 from ..preflight import PreflightError, ensure_ready_or_raise
 
 
-def fetch_home_rails(addon: xbmcaddon.Addon, cache: Cache, backend_id: str) -> List[Dict[str, Any]]:
+def fetch_home_rails(
+    addon: xbmcaddon.Addon, cache: Cache, backend_id: str
+) -> List[Dict[str, Any]]:
     """Fetch home rails from cache or backend, mapping to Netflix-style categories."""
     cache_key = "home:rails"
     try:
@@ -78,8 +82,16 @@ def fetch_home_rails(addon: xbmcaddon.Addon, cache: Cache, backend_id: str) -> L
     except (BackendError, BackendUnavailable):
         amazon_addon_id = backend.backend_id
         raw_rails = [
-            {"id": "watchlist", "title": "My Watchlist", "plugin_url": f"plugin://{amazon_addon_id}/?mode=Watchlist"},
-            {"id": "browse", "title": "Browse All", "plugin_url": f"plugin://{amazon_addon_id}/"},
+            {
+                "id": "watchlist",
+                "title": "My Watchlist",
+                "plugin_url": f"plugin://{amazon_addon_id}/?mode=Watchlist",
+            },
+            {
+                "id": "browse",
+                "title": "Browse All",
+                "plugin_url": f"plugin://{amazon_addon_id}/",
+            },
         ]
         if use_cache:
             cache.set(cache_key, raw_rails, ttl_seconds=cache_ttl)
@@ -91,30 +103,50 @@ def fetch_home_rails(addon: xbmcaddon.Addon, cache: Cache, backend_id: str) -> L
 
     # Define desired categories with localized titles
     DESIRED_RAIL_CATEGORIES = [
-        {"id": "continue_watching", "title_id": 40000, "default_title": "Continue Watching"},
-        {"id": "prime_originals", "title_id": 40001, "default_title": "Prime Originals"},
+        {
+            "id": "continue_watching",
+            "title_id": 40000,
+            "default_title": "Continue Watching",
+        },
+        {
+            "id": "prime_originals",
+            "title_id": 40001,
+            "default_title": "Prime Originals",
+        },
         {"id": "movies", "title_id": 40002, "default_title": "Movies"},
         {"id": "tv", "title_id": 40003, "default_title": "TV"},
-        {"id": "recommended_for_you", "title_id": 40004, "default_title": "Recommended For You"},
+        {
+            "id": "recommended_for_you",
+            "title_id": 40004,
+            "default_title": "Recommended For You",
+        },
     ]
 
     for category in DESIRED_RAIL_CATEGORIES:
-        localized_title = addon.getLocalizedString(category["title_id"]) or category["default_title"]
+        localized_title = (
+            addon.getLocalizedString(category["title_id"]) or category["default_title"]
+        )
         if category["id"] in found_raw_rails:
             rail = found_raw_rails[category["id"]]
-            mapped_rails.append({
-                "id": rail["id"],
-                "title": rail.get("title", localized_title), # Prefer backend title if available
-                "type": rail.get("type", "mixed"),
-                "path": rail.get("path", ""),
-            })
+            mapped_rails.append(
+                {
+                    "id": rail["id"],
+                    "title": rail.get(
+                        "title", localized_title
+                    ),  # Prefer backend title if available
+                    "type": rail.get("type", "mixed"),
+                    "path": rail.get("path", ""),
+                }
+            )
         else:
-            mapped_rails.append({
-                "id": category["id"],
-                "title": localized_title,
-                "type": "mixed", # Default type for placeholder
-                "path": "", # Placeholder path
-            })
+            mapped_rails.append(
+                {
+                    "id": category["id"],
+                    "title": localized_title,
+                    "type": "mixed",  # Default type for placeholder
+                    "path": "",  # Placeholder path
+                }
+            )
 
     # Append any other rails that were returned by the backend but not in our desired list
     existing_mapped_ids = {r["id"] for r in mapped_rails}
@@ -137,13 +169,19 @@ def show_home(context) -> None:
     xbmcplugin.setContent(context.handle, "videos")
 
     rails = fetch_home_rails(addon, cache, backend_id)
-    addon_fanart = addon.getAddonInfo('fanart')
+    addon_fanart = addon.getAddonInfo("fanart")
 
     list_items = []
     for rail in rails:
         li = xbmcgui.ListItem(label=rail.get("title", ""))
-        li.setInfo("video", {"title": rail.get("title", ""), "plot": f"Browse {rail.get('title', 'content')}"})
-        li.setArt({'icon': 'DefaultFolder.png', 'fanart': addon_fanart})
+        li.setInfo(
+            "video",
+            {
+                "title": rail.get("title", ""),
+                "plot": f"Browse {rail.get('title', 'content')}",
+            },
+        )
+        li.setArt({"icon": "DefaultFolder.png", "fanart": addon_fanart})
 
         if "plugin_url" in rail:
             url = rail["plugin_url"]
@@ -152,12 +190,12 @@ def show_home(context) -> None:
         list_items.append((url, li, True))
 
     search_li = xbmcgui.ListItem(label=addon.getLocalizedString(30000))
-    search_li.setArt({'icon': 'DefaultAddonSearch.png', 'fanart': addon_fanart})
+    search_li.setArt({"icon": "DefaultAddonSearch.png", "fanart": addon_fanart})
     search_url = context.build_url(action="search")
     list_items.append((search_url, search_li, True))
 
     diag_li = xbmcgui.ListItem(label=addon.getLocalizedString(30020))
-    diag_li.setArt({'icon': 'DefaultAddonSettings.png', 'fanart': addon_fanart})
+    diag_li.setArt({"icon": "DefaultAddonSettings.png", "fanart": addon_fanart})
     diag_url = context.build_url(action="diagnostics")
     list_items.append((diag_url, diag_li, True))
 

@@ -7,16 +7,20 @@ verifies required add-ons such as ``inputstream.adaptive`` are installed and
 enabled, and optionally queries the Prime backend for DRM readiness via
 JSON-RPC.
 """
+
 from __future__ import annotations
 
 import json
 from typing import Optional
+
+from .perf import log_info, log_warning
 
 try:  # pragma: no cover - Kodi runtime
     import xbmc
     import xbmcaddon
     import xbmcgui
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _XBMC:
         LOGDEBUG = 0
         LOGINFO = 1

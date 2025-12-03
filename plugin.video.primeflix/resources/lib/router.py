@@ -1,4 +1,5 @@
 """Routing logic for the PrimeFlix Kodi plug-in."""
+
 from __future__ import annotations
 
 import sys
@@ -9,6 +10,7 @@ from urllib.parse import parse_qsl, urlencode
 try:  # pragma: no cover - Kodi runtime
     import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
+
     class _Plugin:
         def __init__(self):
             self.handle = 1
