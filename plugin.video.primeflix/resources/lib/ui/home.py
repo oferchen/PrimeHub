@@ -190,4 +190,9 @@ def show_home(context) -> None:
     diag_url = context.build_url(action="diagnostics")
     list_items.append((diag_url, diag_li, True))
 
+    logout_li = xbmcgui.ListItem(label=addon.getLocalizedString(32007))
+    logout_li.setArt({"icon": "DefaultFolder.png", "fanart": addon_fanart}) # Or a specific logout icon
+    logout_url = context.build_url(action="logout")
+    list_items.append((logout_url, logout_li, True))
+
     xbmcplugin.addDirectoryItems(context.handle, list_items)

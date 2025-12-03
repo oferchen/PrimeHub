@@ -50,6 +50,8 @@ msgid "#32005"
 msgstr "Login Failed"
 msgid "#32006"
 msgstr "Please check your credentials."
+msgid "#32007"
+msgstr "Logout"
 
 # Preflight/Error messages (re-purposed for native backend)
 msgid "#21090"

@@ -1,6 +1,9 @@
 import unittest
 from unittest.mock import MagicMock, patch, call
-
+import os
+import sys
+import json
+import requests # Import requests for mocking
 
 # Mock Kodi imports and environment for testing outside Kodi
 class MockXBMC:
@@ -10,8 +13,7 @@ class MockXBMC:
     LOGERROR = 3
 
     def log(self, message: str, level: int = 0) -> None:
-        pass  # Suppress logging during tests
-
+        pass # Suppress logging during tests
 
 class MockXBMCAddon:
     def Addon(self, addon_id=None):
@@ -21,11 +23,11 @@ class MockXBMCAddon:
             "profile": "/mock/path/to/profile",
             "path": "/mock/path/to/addon",
             "fanart": "/mock/path/to/fanart.jpg",
-            "name": "PrimeHub",
+            "name": "PrimeHub"
         }.get(key, "")
         mock_addon.getSetting.side_effect = lambda key: {
-            "region": "0",  # us
-            "max_resolution": "0",  # auto
+            "region": "0", # us
+            "max_resolution": "0", # auto
             "use_cache": "true",
             "cache_ttl": "300",
             "perf_logging": "false",
@@ -42,351 +44,182 @@ class MockXBMCAddon:
         )
         return mock_addon
 
+# Mock xbmcvfs for file operations
+class MockXBMCRuntime:
+    def exists(self, path): return False
+    def File(self, path, mode='r'):
+        mock_file = MagicMock()
+        mock_file.read.return_value = ''
+        mock_file.__enter__.return_value = mock_file
+        return mock_file
+    def delete(self, path): pass
 
 # Patch xbmc and xbmcaddon globally for the test environment
-# This needs to be done before importing prime_api
-original_sys_path = list(sys.path)  # Store original sys.path
+original_sys_path = list(sys.path)
 sys.modules["xbmc"] = MockXBMC()
 sys.modules["xbmcaddon"] = MockXBMCAddon()
-# sys.modules['xbmcgui'] = MagicMock() # Not used directly in prime_api
+sys.modules["xbmcvfs"] = MockXBMCRuntime() # Add xbmcvfs mock
 
-# Add the lib directory to sys.path so we can import prime_api
-import sys
-import os
-
-sys.path.insert(
-    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../resources/lib"))
-)
+# Add the lib directory to sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../resources/lib')))
 
 # Import the module under test AFTER setting up mocks and path
 import prime_api
 from prime_api import (
-    PrimeAPI,
-    BackendUnavailable,
-    BackendError,
-    Playable,
-    _AmazonVODIntegration,
-    _JsonRPCIntegration,
-    normalize_rail,
-    normalize_item,
+    PrimeAPI, BackendUnavailable, AuthenticationError, Playable, _NativeAPIIntegration, normalize_rail, normalize_item
 )
 
-# Restore sys.path after import
+# Restore sys.path
 sys.path = original_sys_path
 
 
 class TestPrimeAPI(unittest.TestCase):
 
     def setUp(self):
-        # Ensure _backend_instance is reset for each test
         prime_api._backend_instance = None
-
-        # Reset getSetting mocks to default for each test
-        mock_addon_instance = xbmcaddon.Addon()
-        mock_addon_instance.getSetting.side_effect = lambda key: {
-            "region": "0",  # us
-            "max_resolution": "0",  # auto
-        }.get(key, "0")
-        mock_addon_instance.getSettingBool.side_effect = lambda key: {
-            "use_cache": True,
-            "perf_logging": False,
-        }.get(key, False)
-        mock_addon_instance.getSettingInt.side_effect = lambda key: {
-            "cache_ttl": 300,
-        }.get(key, 0)
-        mock_addon_instance.getLocalizedString.side_effect = (
-            lambda code: f"LocalizedString_{code}"
-        )
-
-    @patch("prime_api.discover_backend", return_value="plugin.video.amazonvod")
-    @patch("prime_api._AmazonVODIntegration")
-    @patch("prime_api._JsonRPCIntegration")
-    def test_primeapi_init_direct_success(
-        self, MockJsonRPCIntegration, MockAmazonVODIntegration, mock_discover_backend
-    ):
-        # Test case: Direct import succeeds
-        mock_amazon_instance = MagicMock()
-        MockAmazonVODIntegration.return_value = mock_amazon_instance
-
-        api = PrimeAPI()
-        self.assertIsInstance(
-            api._strategy, MagicMock
-        )  # It's a MagicMock instance returned by patch
-        self.assertEqual(api._strategy_name, "direct_import")
-        MockAmazonVODIntegration.assert_called_once_with(
-            "plugin.video.amazonvod", api._addon
-        )
-        MockJsonRPCIntegration.assert_not_called()
-
-    @patch("prime_api.discover_backend", return_value="plugin.video.amazonvod")
-    @patch(
-        "prime_api._AmazonVODIntegration",
-        side_effect=BackendUnavailable("Direct failed"),
-    )
-    @patch("prime_api._JsonRPCIntegration")
-    def test_primeapi_init_jsonrpc_fallback_success(
-        self, MockJsonRPCIntegration, MockAmazonVODIntegration, mock_discover_backend
-    ):
-        # Test case: Direct import fails, JSON-RPC succeeds
-        mock_jsonrpc_instance = MagicMock()
-        MockJsonRPCIntegration.return_value = mock_jsonrpc_instance
+        # Reset xbmcvfs mock for each test
+        sys.modules['xbmcvfs'] = MockXBMCRuntime()
+        
+    @patch('prime_api.xbmcaddon.Addon')
+    @patch('prime_api._NativeAPIIntegration')
+    def test_primeapi_init_success(self, MockNativeAPIIntegration, MockAddon):
+        mock_addon_instance = MockAddon.return_value
+        mock_native_integration_instance = MagicMock()
+        MockNativeAPIIntegration.return_value = mock_native_integration_instance
 
         api = PrimeAPI()
         self.assertIsInstance(api._strategy, MagicMock)
-        self.assertEqual(api._strategy_name, "json_rpc")
-        MockAmazonVODIntegration.assert_called_once_with(
-            "plugin.video.amazonvod", api._addon
-        )
-        MockJsonRPCIntegration.assert_called_once_with(
-            "plugin.video.amazonvod", api._addon
-        )
-
-    @patch("prime_api.discover_backend", return_value="plugin.video.amazonvod")
-    @patch(
-        "prime_api._AmazonVODIntegration",
-        side_effect=BackendUnavailable("Direct failed"),
-    )
-    @patch(
-        "prime_api._JsonRPCIntegration",
-        side_effect=BackendUnavailable("JSON-RPC failed"),
-    )
-    def test_primeapi_init_all_fail(
-        self, MockJsonRPCIntegration, MockAmazonVODIntegration, mock_discover_backend
-    ):
-        # Test case: Both strategies fail
-        with self.assertRaises(BackendUnavailable):
-            PrimeAPI()
-        # _addon is an instance of MockXBMCAddon.Addon(), which is also a MagicMock
-        MockAmazonVODIntegration.assert_called_once_with(
-            "plugin.video.amazonvod", unittest.mock.ANY
-        )
-        MockJsonRPCIntegration.assert_called_once_with(
-            "plugin.video.amazonvod", unittest.mock.ANY
-        )
-
-    @patch("prime_api.discover_backend", return_value=None)
-    def test_primeapi_init_no_backend_found(self, mock_discover_backend):
-        # Test case: No backend addon discovered
-        with self.assertRaises(BackendUnavailable):
-            PrimeAPI()
+        MockNativeAPIIntegration.assert_called_once_with(mock_addon_instance)
+        
+        # Test facade methods delegate to strategy
+        api.login("user", "pass")
+        mock_native_integration_instance.login.assert_called_once_with("user", "pass")
+        
+        api.logout()
+        mock_native_integration_instance.logout.assert_called_once()
+        
+        api.is_logged_in()
+        mock_native_integration_instance.is_logged_in.assert_called_once()
+        
+        api.get_home_rails()
+        mock_native_integration_instance.get_home_rails.assert_called_once()
 
 
-# --- Tests for _AmazonVODIntegration methods ---
-class TestAmazonVODIntegration(unittest.TestCase):
+class TestNativeAPIIntegration(unittest.TestCase):
     def setUp(self):
-        self.addon_id = "plugin.video.amazonvod"
         self.mock_addon = MagicMock(spec=xbmcaddon.Addon)
-        self.mock_pv = MagicMock()
+        self.mock_addon.getAddonInfo.return_value = "/mock/path/to/profile" # for session_path
+        
+        # Mock requests.Session for network calls
+        self.mock_session = MagicMock(spec=requests.Session)
+        self.mock_session.cookies = MagicMock(spec=requests.cookies.RequestsCookieJar)
+        self.mock_session.get.return_value.raise_for_status.return_value = None
+        self.mock_session.post.return_value.raise_for_status.return_value = None
+        
+        # Patch requests.Session to return our mock session
+        self.patcher_requests_session = patch('requests.Session', return_value=self.mock_session)
+        self.patcher_requests_session.start()
 
-        # Mock _AmazonVODIntegration to bypass _init_amazon_modules and directly set _pv
-        with patch("prime_api._AmazonVODIntegration._init_amazon_modules"):
-            self.integration = _AmazonVODIntegration(self.addon_id, self.mock_addon)
-            self.integration._pv = self.mock_pv  # Manually set the mocked _pv
+        # Mock xbmcvfs file operations
+        self.mock_xbmcvfs = sys.modules['xbmcvfs']
+        self.mock_xbmcvfs.exists.return_value = False # Default to no session file
 
-        # Configure default settings for the mock addon
-        self.mock_addon.getSetting.side_effect = lambda key: {
-            "region": "0",  # us
-            "max_resolution": "0",  # auto
-        }.get(key, "0")
+        self.integration = _NativeAPIIntegration(self.mock_addon)
+        self.integration._session = self.mock_session # Ensure session is our mock
 
+
+    def tearDown(self):
+        self.patcher_requests_session.stop()
+        
+    def test_init_loads_session_if_exists(self):
+        self.mock_xbmcvfs.exists.return_value = True
+        self.mock_xbmcvfs.File.return_value.__enter__.return_value.read.return_value = json.dumps({'cookies': {'c1': 'v1'}})
+        
+        integration = _NativeAPIIntegration(self.mock_addon) # Re-init to trigger load
+        self.mock_xbmcvfs.exists.assert_called_once_with(integration._session_path)
+        integration._session.cookies.update.assert_called_once_with({'c1': 'v1'})
+        self.assertTrue(integration.is_logged_in())
+
+    def test_init_starts_new_session_if_no_file(self):
+        self.mock_xbmcvfs.exists.return_value = False
+        integration = _NativeAPIIntegration(self.mock_addon)
+        self.mock_xbmcvfs.exists.assert_called_once_with(integration._session_path)
+        self.assertIsInstance(integration._session, MagicMock) # It's a mock requests.Session
+        self.assertFalse(integration.is_logged_in())
+
+    def test_login_success(self):
+        self.mock_session.get.return_value.url = "https://www.amazon.com/ap/signin"
+        self.mock_session.post.return_value.url = "https://www.amazon.com/gp/prime" # Simulate redirect away from signin
+        
+        # Mock verify_session for successful login
+        self.integration._verify_session = MagicMock(return_value=True)
+
+        result = self.integration.login("user", "pass")
+        self.assertTrue(result)
+        self.mock_session.get.assert_called_once()
+        self.mock_session.post.assert_called_once()
+        self.mock_xbmcvfs.File.assert_called_once() # Should save session
+        self.integration._verify_session.assert_called_once()
+
+    def test_login_failure_bad_credentials(self):
+        self.mock_session.get.return_value.url = "https://www.amazon.com/ap/signin"
+        self.mock_session.post.return_value.url = "https://www.amazon.com/ap/signin?error=1" # Simulate no redirect
+        
+        self.integration._verify_session = MagicMock(return_value=False) # Will be called, but should return False
+
+        with self.assertRaises(AuthenticationError):
+            self.integration.login("user", "wrong_pass")
+        self.mock_session.get.assert_called_once()
+        self.mock_session.post.assert_called_once()
+        self.assertFalse(self.integration.is_logged_in()) # Session should be cleared
+        self.mock_xbmcvfs.delete.assert_called_once() # Should clear session file if failure after partial save
+
+    def test_logout_clears_session_and_file(self):
+        self.integration._session = self.mock_session # Ensure there's a session
+        self.mock_xbmcvfs.exists.return_value = True # Simulate file exists
+        
+        self.integration.logout()
+        self.assertIsNone(self.integration._session)
+        self.mock_xbmcvfs.delete.assert_called_once_with(self.integration._session_path)
+        self.mock_session.close.assert_called_once()
+
+    def test_is_logged_in_true(self):
+        self.integration._session = self.mock_session
+        self.integration._verify_session = MagicMock(return_value=True)
+        self.assertTrue(self.integration.is_logged_in())
+        self.integration._verify_session.assert_called_once()
+
+    def test_is_logged_in_false_no_session(self):
+        self.integration._session = None
+        self.assertFalse(self.integration.is_logged_in())
+
+    def test_is_logged_in_false_invalid_session(self):
+        self.integration._session = self.mock_session
+        self.integration._verify_session = MagicMock(return_value=False)
+        self.assertFalse(self.integration.is_logged_in())
+        self.integration._verify_session.assert_called_once()
+        self.assertIsNone(self.integration._session) # Should have called logout
+
+    def test_get_home_rails_not_logged_in(self):
+        self.integration._session = None
+        with self.assertRaises(AuthenticationError):
+            self.integration.get_home_rails()
+            
     def test_get_home_rails_success(self):
-        self.mock_pv._catalog = {"root": {"movies": {"title": "Movies Rail"}}}
-        rails = self.integration.get_home_rails()
-        self.assertEqual(len(rails), 1)
-        self.assertEqual(rails[0]["id"], "movies")
-
-    def test_get_home_rails_default_fallback(self):
-        # Test when _catalog is empty or invalid
-        self.mock_pv._catalog = {"root": {}}
+        self.integration._session = self.mock_session # Simulate logged in
+        self.integration._verify_session = MagicMock(return_value=True) # Ensure session is valid
         rails = self.integration.get_home_rails()
         self.assertGreater(len(rails), 0)
-        self.assertIn(
-            {
-                "id": "watchlist",
-                "title": "My Watchlist",
-                "type": "mixed",
-                "path": "watchlist",
-            },
-            rails,
-        )
-
-    def test_get_home_rails_no_pv(self):
-        self.integration._pv = None
-        rails = self.integration.get_home_rails()
-        self.assertGreater(len(rails), 0)  # Should fall back to defaults
-
-    def test_get_rail_items_success(self):
-        self.mock_pv._catalog = {
-            "root": {"movies": {"content": [{"asin": "123", "title": "Movie 1"}]}}
-        }
-        items, next_cursor = self.integration.get_rail_items("movies", None)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["asin"], "123")
-        self.assertIsNone(next_cursor)
-
-    def test_get_rail_items_launcher_fallback(self):
-        self.mock_pv._catalog = {}  # No catalog means no items
-        items, next_cursor = self.integration.get_rail_items("unknown_rail", None)
-        self.assertEqual(len(items), 1)
-        self.assertIn("LAUNCHER_", items[0]["asin"])
-
-    def test_get_playable_success(self):
-        mock_stream_data = {
-            "url": "http://manifest.url",
-            "type": "mpd",
-            "drm": {"type": "com.widevine.alpha", "license_url": "http://license.url"},
-            "headers": {"User-Agent": "test"},
-            "metadata": {"title": "Test Movie"},
-        }
-        self.mock_pv.GetStream.return_value = mock_stream_data
-
-        playable = self.integration.get_playable("test_asin")
-        self.assertEqual(playable.url, "http://manifest.url")
-        self.assertEqual(playable.manifest_type, "mpd")
-        self.assertEqual(playable.license_key, "http://license.url")
-        self.assertEqual(playable.metadata["title"], "Test Movie")
-        self.mock_pv.GetStream.assert_called_once_with(asin="test_asin", play=False)
-
-    def test_get_playable_backend_error(self):
-        self.mock_pv.GetStream.side_effect = Exception("PV error")
-        with self.assertRaises(BackendError):
-            self.integration.get_playable("test_asin")
-
-    def test_search_success(self):
-        mock_search_results = {
-            "content": [{"asin": "s1", "title": "Search Result 1"}],
-            "next_page_cursor": "next_page",
-        }
-        self.mock_pv.Search.return_value = mock_search_results
-
-        items, next_cursor = self.integration.search("query", None)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["asin"], "s1")
-        self.assertEqual(next_cursor, "next_page")
-        self.mock_pv.Search.assert_called_once_with("query", page=None)
-
-    def test_get_region_info_success(self):
-        self.mock_pv.getRegion.return_value = {"country": "US"}
-        region = self.integration.get_region_info()
-        self.assertEqual(region, {"country": "US"})
-        self.mock_pv.getRegion.assert_called_once()
-
-    def test_is_drm_ready_success(self):
-        self.mock_pv.isDRMReady.return_value = True
-        is_ready = self.integration.is_drm_ready()
-        self.assertTrue(is_ready)
-        self.mock_pv.isDRMReady.assert_called_once()
+        self.assertEqual(rails[0]['id'], 'continue_watching')
 
 
-# --- Tests for _JsonRPCIntegration methods ---
-class TestJsonRPCIntegration(unittest.TestCase):
-    def setUp(self):
-        self.addon_id = "plugin.video.amazonvod"
-        self.mock_addon = MagicMock(spec=xbmcaddon.Addon)
-        self.integration = _JsonRPCIntegration(self.addon_id, self.mock_addon)
-
-        # Configure default settings for the mock addon
-        self.mock_addon.getSetting.side_effect = lambda key: {
-            "region": "0",  # us
-            "max_resolution": "0",  # auto
-        }.get(key, "0")
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_get_home_rails_success(self, mock_executeJSONRPC):
-        mock_executeJSONRPC.return_value = (
-            '{"result": "[{"id": "r1", "title": "Rail 1"}]"}'
-        )
-        rails = self.integration.get_home_rails()
-        self.assertEqual(len(rails), 1)
-        self.assertEqual(rails[0]["id"], "r1")
-        mock_executeJSONRPC.assert_called_once()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_get_home_rails_rpc_error(self, mock_executeJSONRPC):
-        mock_executeJSONRPC.return_value = '{"error": {"message": "RPC Error"}}'
-        with self.assertRaises(BackendError):
-            self.integration.get_home_rails()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_get_rail_items_success(self, mock_executeJSONRPC):
-        mock_executeJSONRPC.return_value = (
-            '{"result": "{"items": [{"asin": "i1"}], "next_cursor": "c1"}"}'
-        )
-        items, next_cursor = self.integration.get_rail_items("rail_id", None)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["asin"], "i1")
-        self.assertEqual(next_cursor, "c1")
-        mock_executeJSONRPC.assert_called_once()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_get_playable_success(self, mock_executeJSONRPC):
-        mock_playable_data = {
-            "url": "http://manifest.url",
-            "manifest_type": "mpd",
-            "license_key": "http://license.url",
-            "headers": {"User-Agent": "test"},
-            "metadata": {"title": "Test Playable"},
-        }
-        mock_executeJSONRPC.return_value = (
-            f'{{"result": "{json.dumps(mock_playable_data).replace("\"", "\\\"")}"}}'
-        )
-
-        playable = self.integration.get_playable("asin1")
-        self.assertEqual(playable.url, "http://manifest.url")
-        self.assertEqual(playable.metadata["title"], "Test Playable")
-        mock_executeJSONRPC.assert_called_once()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_search_success(self, mock_executeJSONRPC):
-        mock_search_results = {
-            "items": [{"asin": "s1", "title": "Search Result 1"}],
-            "next_cursor": "next_page",
-        }
-        mock_executeJSONRPC.return_value = (
-            f'{{"result": "{json.dumps(mock_search_results).replace("\"", "\\\"")}"}}'
-        )
-
-        items, next_cursor = self.integration.search("query", None)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["asin"], "s1")
-        self.assertEqual(next_cursor, "next_page")
-        mock_executeJSONRPC.assert_called_once()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_get_region_info_success(self, mock_executeJSONRPC):
-        mock_executeJSONRPC.return_value = '{"result": "{"country": "US"}"}'
-        region = self.integration.get_region_info()
-        self.assertEqual(region, {"country": "US"})
-        mock_executeJSONRPC.assert_called_once()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_is_drm_ready_success_bool(self, mock_executeJSONRPC):
-        mock_executeJSONRPC.return_value = '{"result": "true"}'
-        is_ready = self.integration.is_drm_ready()
-        self.assertTrue(is_ready)
-        mock_executeJSONRPC.assert_called_once()
-
-    @patch("prime_api.xbmc.executeJSONRPC")
-    def test_is_drm_ready_success_dict(self, mock_executeJSONRPC):
-        mock_executeJSONRPC.return_value = '{"result": "{"ready": true}"}'
-        is_ready = self.integration.is_drm_ready()
-        self.assertTrue(is_ready)
-        mock_executeJSONRPC.assert_called_once()
-
-
-# --- Tests for normalize functions ---
 class TestNormalizeFunctions(unittest.TestCase):
     def test_normalize_rail(self):
-        raw_rail = {
-            "id": "test_id",
-            "title": "Test Title",
-            "type": "movies",
-            "path": "/path",
-        }
+        raw_rail = {"id": "test_id", "title": "Test Title", "type": "movies"}
         normalized = normalize_rail(raw_rail)
-        self.assertEqual(normalized["id"], "test_id")
-        self.assertEqual(normalized["title"], "Test Title")
-        self.assertEqual(normalized["type"], "movies")
+        self.assertEqual(normalized['id'], 'test_id')
+        self.assertEqual(normalized['title'], 'Test Title')
+        self.assertEqual(normalized['type'], 'movies')
 
     def test_normalize_item(self):
         raw_item = {
@@ -402,8 +235,7 @@ class TestNormalizeFunctions(unittest.TestCase):
         self.assertEqual(normalized["asin"], "a1")
         self.assertEqual(normalized["title"], "Item Title")
         self.assertTrue(normalized["is_movie"])
-        self.assertEqual(normalized["art"]["poster"], "p.jpg")
+        self.assertEqual(normalized["art"]["poster"], "p.jpg") # Check that it adapts
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

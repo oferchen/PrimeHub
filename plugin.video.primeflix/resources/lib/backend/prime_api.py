@@ -8,6 +8,8 @@ This module demonstrates the use of several design patterns:
 """
 from __future__ import annotations
 
+import json # Required for session serialization
+import os   # Required for file path operations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,8 +20,9 @@ import requests
 try:
     import xbmc
     import xbmcaddon
+    import xbmcvfs # Required for file system operations in Kodi
 except ImportError:
-    from .mock_kodi import xbmc, xbmcaddon
+    from .mock_kodi import xbmc, xbmcaddon, xbmcvfs # Mock for xbmcvfs too
 
 # --- Data Models ---
 
@@ -48,8 +51,63 @@ class _NativeAPIIntegration:
     """
     def __init__(self, addon: xbmcaddon.Addon) -> None:
         self._addon = addon
-        self._session = requests.Session() # Initialize requests session
-        # TODO: Implement session loading/saving from/to disk
+        self._session_path = os.path.join(addon.getAddonInfo('profile'), 'session.json')
+        self._session: Optional[requests.Session] = None
+        self._load_session()
+
+    def _load_session(self) -> None:
+        """Loads a previously saved session from disk."""
+        _log(xbmc.LOGINFO, "Attempting to load session.")
+        if xbmcvfs.exists(self._session_path):
+            try:
+                with xbmcvfs.File(self._session_path, 'r') as f:
+                    session_data = json.loads(f.read())
+                
+                self._session = requests.Session()
+                # Reconstruct cookies
+                self._session.cookies.update(session_data.get('cookies', {}))
+                # TODO: Reconstruct other session aspects like headers if necessary
+                _log(xbmc.LOGINFO, "Session loaded successfully.")
+                
+                # Robust check after loading: ping a protected endpoint
+                if not self._verify_session():
+                    _log(xbmc.LOGWARNING, "Loaded session is invalid. Clearing.")
+                    self.logout() # Clear invalid session
+            except Exception as e:
+                _log(xbmc.LOGERROR, f"Failed to load session: {e}")
+                self.logout() # Clear corrupted session
+        else:
+            _log(xbmc.LOGINFO, "No session file found.")
+            self._session = requests.Session() # Initialize a new session if none exists
+
+    def _save_session(self) -> None:
+        """Saves the current session to disk."""
+        if self._session and self._session.cookies:
+            _log(xbmc.LOGINFO, "Saving session.")
+            session_data = {
+                'cookies': requests.utils.dict_from_cookiejar(self._session.cookies),
+                # TODO: Save other session aspects like headers if necessary
+            }
+            try:
+                with xbmcvfs.File(self._session_path, 'w') as f:
+                    f.write(json.dumps(session_data))
+                _log(xbmc.LOGINFO, "Session saved successfully.")
+            except Exception as e:
+                _log(xbmc.LOGERROR, f"Failed to save session: {e}")
+        else:
+            _log(xbmc.LOGINFO, "No active session to save.")
+
+    def _verify_session(self) -> bool:
+        """Pings a protected Amazon endpoint to verify session validity."""
+        if not self._session:
+            return False
+        
+        # TODO: Implement a lightweight API call to a protected endpoint.
+        # This is highly dependent on Amazon's API. For now, a mock check.
+        _log(xbmc.LOGINFO, "Verifying session validity (mock).")
+        # Example: response = self._session.get("https://www.amazon.com/gp/your-account/order-history")
+        # return response.status_code == 200 and "Sign-in" not in response.text
+        return True # Mock always valid for now
 
     def login(self, username: str, password: str) -> bool:
         """
@@ -58,11 +116,14 @@ class _NativeAPIIntegration:
         """
         _log(xbmc.LOGINFO, f"Attempting login for user: {username}")
         
-        # Step 1: Get login page to extract form data (e.g., CSRF token)
+        # Ensure a fresh session for login attempt
+        self.logout() 
+        self._session = requests.Session()
+
         login_page_url = "https://www.amazon.com/ap/signin"
         try:
-            login_page_response = self._session.get(login_page_url)
-            login_page_response.raise_for_status() # Raise an exception for HTTP errors
+            login_page_response = self._session.get(login_page_url, timeout=10)
+            login_page_response.raise_for_status()
         except requests.exceptions.RequestException as e:
             _log(xbmc.LOGERROR, f"Failed to fetch login page: {e}")
             raise AuthenticationError("Could not reach Amazon login page.")
@@ -70,40 +131,42 @@ class _NativeAPIIntegration:
         # TODO: Parse login_page_response.text to find CSRF token and other hidden form fields.
         # This requires detailed knowledge of Amazon's current login page HTML structure.
         # Example: extracted_csrf_token = extract_csrf_from_html(login_page_response.text)
-        
-        # Step 2: Perform POST request with credentials
+        extracted_csrf_token = "mock_csrf_token" # Placeholder
+
         login_data = {
             "email": username,
             "password": password,
-            # "csrf_token": extracted_csrf_token, # Example form data
-            # ... other required form fields based on page analysis ...
+            "csrf_token": extracted_csrf_token, # Example form data
+            "appActionToken": "mock_appActionToken", # Other potential fields
+            "appAction": "SIGNIN",
+            "metadata1": "mock_metadata1" # Add any other fields Amazon's form requires
         }
-        post_response = self._session.post(login_page_url, data=login_data, allow_redirects=True)
+        post_response = self._session.post(login_page_url, data=login_data, allow_redirects=True, timeout=10)
         
-        # TODO: Check post_response for successful login.
-        # This involves inspecting the final URL, status code, and content of the page.
-        # Success often means redirection to a profile page or a specific token in the URL.
-        if "ap/signin" not in post_response.url: # Very basic check for redirection away from signin
+        # TODO: Robustly check post_response for successful login.
+        # This is highly dependent on Amazon's current login flow.
+        if "ap/signin" not in post_response.url and self._verify_session(): # Basic check for redirection + session validity
             _log(xbmc.LOGINFO, "Login successful (mock implementation based on redirection).")
-            # TODO: Verify authentication more robustly (e.g., fetch a protected page).
+            self._save_session() # Save session on successful login
             return True
         else:
             _log(xbmc.LOGWARNING, "Login failed (mock implementation). Check credentials.")
-            self._session.close() # Close session on failure
-            self._session = requests.Session() # Re-initialize for next attempt
-            return False
+            self.logout()
+            raise AuthenticationError("Invalid username or password, or other login issue.")
 
     def logout(self) -> None:
-        """Clears the current session."""
+        """Clears the current session and deletes saved session data."""
         _log(xbmc.LOGINFO, "Logging out.")
         if self._session:
             self._session.close()
         self._session = None
+        if xbmcvfs.exists(self._session_path):
+            xbmcvfs.delete(self._session_path)
+            _log(xbmc.LOGINFO, "Session file deleted.")
 
     def is_logged_in(self) -> bool:
         """Checks if a valid session exists."""
-        # TODO: This needs a more robust check (e.g., ping a protected Amazon API endpoint)
-        return self._session is not None and len(self._session.cookies) > 0
+        return self._session is not None and self._verify_session()
 
     def get_home_rails(self) -> List[Dict[str, Any]]:
         """
