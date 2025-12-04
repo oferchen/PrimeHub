@@ -10,7 +10,7 @@ except ImportError:
     from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
     from ...tests.kodi_mocks import MockXBMCGUI as xbmcgui
 
-from .prime_api import get_backend, AuthenticationError
+from ..backend.prime_api import get_backend, AuthenticationError
 
 def show_login_screen() -> bool:
     """
@@ -34,6 +34,8 @@ def show_login_screen() -> bool:
             dialog.ok(addon.getLocalizedString(32003), addon.getLocalizedString(32004)) # "Login Successful", "You are now logged in."
             return True
         else:
+            # The login method itself should raise AuthenticationError on failure
+            # This is a fallback
             dialog.ok(addon.getLocalizedString(32005), addon.getLocalizedString(32006)) # "Login Failed", "Please check your credentials."
             return False
     except AuthenticationError as e:
