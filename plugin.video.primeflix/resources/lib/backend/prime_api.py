@@ -13,9 +13,12 @@ import os   # Required for file path operations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import sys
+import os
 
 # Add vendor directory to sys.path for bundled libraries
-vendor_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'vendor'))
+# prime_api.py is in resources/lib/backend/
+# Vendor directory is in resources/lib/vendor/
+vendor_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vendor'))
 if vendor_path not in sys.path:
     sys.path.insert(0, vendor_path)
 
@@ -28,7 +31,7 @@ try:
     import xbmcaddon
     import xbmcvfs # Required for file system operations in Kodi
 except ImportError:
-    from .mock_kodi import xbmc, xbmcaddon, xbmcvfs # Mock for xbmcvfs too
+    from ...tests.kodi_mocks import xbmc, xbmcaddon, xbmcvfs # Mocks from tests/kodi_mocks.py
 
 # --- Data Models ---
 

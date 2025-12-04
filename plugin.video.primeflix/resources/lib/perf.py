@@ -17,32 +17,8 @@ try:  # pragma: no cover - Kodi runtime
     import xbmc
     import xbmcaddon
 except ImportError:  # pragma: no cover - local dev fallback
-
-    class _XBMCStub:
-        LOGDEBUG = 0
-        LOGINFO = 1
-        LOGWARNING = 2
-        LOGERROR = 3
-
-        @staticmethod
-        def log(message: str, level: int = 0) -> None:
-            print(f"[xbmc:{level}] {message}")
-
-    xbmc = _XBMCStub()  # type: ignore
-    xbmcaddon = type(  # type: ignore
-        "addon",
-        (),
-        {
-            "Addon": lambda *args, **kwargs: type(
-                "AddonStub",
-                (),
-                {
-                    "getSetting": staticmethod(lambda key: "false"),
-                    "getSettingBool": staticmethod(lambda key: False),
-                },
-            )(),
-        },
-    )
+    from ...tests.kodi_mocks import MockXBMC as xbmc
+    from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
 
 
 LOG_PREFIX = "[PrimeFlix]"

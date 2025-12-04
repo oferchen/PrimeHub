@@ -9,29 +9,12 @@ from urllib.parse import parse_qsl, urlencode
 
 try:  # pragma: no cover - Kodi runtime
     import xbmcplugin
+    import xbmcaddon # Added for logout notification
+    import xbmcgui # Added for logout notification
 except ImportError:  # pragma: no cover - local dev fallback
-
-    class _Plugin:
-        def __init__(self):
-            self.handle = 1
-
-        @staticmethod
-        def addDirectoryItem(handle, url, listitem, isFolder=False):
-            print(f"ADD DIR: {url} ({'folder' if isFolder else 'item'})")
-
-        @staticmethod
-        def endOfDirectory(handle, succeeded=True):
-            print("END OF DIRECTORY")
-
-        @staticmethod
-        def setContent(handle, content):
-            print(f"SET CONTENT: {content}")
-
-        @staticmethod
-        def setResolvedUrl(handle, succeeded, listitem):
-            print(f"RESOLVED: {succeeded}")
-
-    xbmcplugin = _Plugin()  # type: ignore
+    from ...tests.kodi_mocks import MockXBMCPlugin as xbmcplugin
+    from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
+    from ...tests.kodi_mocks import MockXBMCGUI as xbmcgui
 
 from .preflight import PreflightError, show_preflight_error
 from .ui import diagnostics, home, listing, playback, login
@@ -62,6 +45,8 @@ def dispatch(base_url: str, param_string: str) -> None:
         # If not logged in, force the login screen.
         # If login is successful, we can proceed. Otherwise, we exit.
         if not login.show_login_screen():
+            # User cancelled login or it failed, so prevent further action.
+            xbmcplugin.endOfDirectory(handle, succeeded=False)
             return # Exit if login is cancelled or fails
 
     try:
@@ -69,7 +54,15 @@ def dispatch(base_url: str, param_string: str) -> None:
             login.show_login_screen()
         elif action == "logout":
             backend.logout()
-            # Optionally, show a notification to the user
+            # Inform the user they have been logged out.
+            addon = xbmcaddon.Addon()
+            xbmcgui.Dialog().notification(
+                addon.getAddonInfo('name'),
+                addon.getLocalizedString(32007) + " successful.", # "Logout successful."
+                xbmcgui.NOTIFICATION_INFO
+            )
+            xbmcplugin.endOfDirectory(handle) # End the directory for logout action
+            return
         elif action == "list":
             rail_id = params.get("rail", "")
             cursor = params.get("cursor")

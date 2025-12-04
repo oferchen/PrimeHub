@@ -20,43 +20,9 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcaddon
     import xbmcgui
 except ImportError:  # pragma: no cover - local dev fallback
-
-    class _XBMC:
-        LOGDEBUG = 0
-        LOGINFO = 1
-        LOGWARNING = 2
-        LOGERROR = 3
-
-        @staticmethod
-        def log(msg: str, level: int = 0) -> None:
-            print(f"[xbmc:{level}] {msg}")
-
-        @staticmethod
-        def executeJSONRPC(payload: str) -> str:
-            return json.dumps({"result": {"addons": []}})
-
-    class _Addon:
-        def __init__(self, addon_id: Optional[str] = None):
-            self._id = addon_id or "plugin.video.primeflix"
-
-        def getAddonInfo(self, key: str) -> str:
-            if key == "id":
-                return self._id
-            if key == "name":
-                return "PrimeHub"
-            return ""
-
-        def getLocalizedString(self, code: int) -> str:
-            return str(code)
-
-    class _Dialog:
-        @staticmethod
-        def ok(title: str, message: str) -> None:
-            print(f"DIALOG: {title}: {message}")
-
-    xbmc = _XBMC()  # type: ignore
-    xbmcaddon = type("addon", (), {"Addon": _Addon})  # type: ignore
-    xbmcgui = type("gui", (), {"Dialog": _Dialog})  # type: ignore
+    from ...tests.kodi_mocks import MockXBMC as xbmc
+    from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
+    from ...tests.kodi_mocks import MockXBMCGUI as xbmcgui
 
 from .backend.prime_api import get_backend
 

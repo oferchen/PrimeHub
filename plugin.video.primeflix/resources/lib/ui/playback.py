@@ -13,28 +13,8 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcgui
     import xbmcplugin
 except ImportError:  # pragma: no cover - local dev fallback
-
-    class _ListItem:
-        def __init__(self, label=""):
-            self.label = label
-            self.props: Dict[str, Any] = {}
-
-        def setProperty(self, key: str, value: str) -> None:
-            self.props[key] = value
-
-        def setInfo(self, type_: str, info: Dict[str, Any]):
-            self.info = (type_, info)
-
-        def setContentLookup(self, enabled: bool) -> None:
-            self.lookup = enabled
-
-    class _Plugin:
-        @staticmethod
-        def setResolvedUrl(handle, succeeded, listitem):
-            print(f"Resolved {succeeded} -> {getattr(listitem, 'label', '')}")
-
-    xbmcgui = type("xbmcgui", (), {"ListItem": _ListItem})  # type: ignore
-    xbmcplugin = _Plugin()  # type: ignore
+    from ...tests.kodi_mocks import MockXBMCGUI as xbmcgui
+    from ...tests.kodi_mocks import MockXBMCPlugin as xbmcplugin
 
 from ..backend.prime_api import BackendError, BackendUnavailable, Playable, get_backend
 from ..perf import timed

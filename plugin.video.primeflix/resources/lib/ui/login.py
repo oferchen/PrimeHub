@@ -6,7 +6,9 @@ try:
     import xbmcaddon
     import xbmcgui
 except ImportError:
-    from .mock_kodi import xbmc, xbmcaddon, xbmcgui
+    from ...tests.kodi_mocks import MockXBMC as xbmc
+    from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
+    from ...tests.kodi_mocks import MockXBMCGUI as xbmcgui
 
 from .prime_api import get_backend, AuthenticationError
 

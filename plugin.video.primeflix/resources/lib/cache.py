@@ -17,38 +17,8 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcvfs
     import xbmcaddon
 except ImportError:  # pragma: no cover - local dev fallback
-
-    class _VFSStub:
-        def exists(self, path: str) -> bool:
-            return os.path.exists(path)
-
-        def mkdirs(self, path: str) -> None:
-            os.makedirs(path, exist_ok=True)
-
-        def translatePath(self, path: str) -> str:
-            return path
-
-        def delete(self, path: str) -> None:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-
-        def open(self, path: str, mode: str = "r"):
-            return open(path, mode)
-
-    class _AddonStub:
-        def getAddonInfo(self, key: str) -> str:
-            if key == "id":
-                return "plugin.video.primeflix"
-            if key == "profile":
-                return os.path.join(os.getcwd(), "profile")
-            if key == "path":
-                return os.getcwd()
-            raise KeyError(key)
-
-    xbmcvfs = _VFSStub()  # type: ignore
-    xbmcaddon = type("addon", (), {"Addon": lambda *args, **kwargs: _AddonStub()})  # type: ignore
+    from ...tests.kodi_mocks import MockXBMCRuntime as xbmcvfs
+    from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
 
 
 class Cache:

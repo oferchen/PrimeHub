@@ -10,50 +10,9 @@ try:  # pragma: no cover - Kodi runtime
     import xbmcplugin
     import xbmcaddon
 except ImportError:  # pragma: no cover - local dev fallback
-
-    class _Dialog:
-        @staticmethod
-        def input(heading: str):
-            print(f"SEARCH: {heading}")
-            return ""
-
-    class _ListItem:
-        def __init__(self, label=""):
-            self.label = label
-
-        def setArt(self, art: Dict[str, str]):
-            self.art = art
-
-        def setInfo(self, type_: str, info: Dict[str, Any]):
-            self.info = (type_, info)
-
-    class _Plugin:
-        @staticmethod
-        def addDirectoryItems(handle, items):
-            print(f"ADD {len(items)} items")
-
-        @staticmethod
-        def setContent(handle, content):
-            print(f"SET CONTENT {content}")
-
-    xbmcgui = type("xbmcgui", (), {"ListItem": _ListItem, "Dialog": _Dialog})  # type: ignore
-    xbmcplugin = _Plugin()  # type: ignore
-    xbmcaddon = type(
-        "addon",
-        (),
-        {
-            "Addon": lambda *a, **k: type(
-                "AddonStub",
-                (),
-                {
-                    "getSettingInt": lambda self, k: 300,
-                    "getSettingBool": lambda self, k: True,
-                    "getSetting": lambda self, k: 300,
-                    "getLocalizedString": lambda self, k: "",
-                },
-            )(),
-        },
-    )  # type: ignore
+    from ...tests.kodi_mocks import MockXBMCAddon as xbmcaddon
+    from ...tests.kodi_mocks import MockXBMCGUI as xbmcgui
+    from ...tests.kodi_mocks import MockXBMCPlugin as xbmcplugin
 
 from ..backend.prime_api import BackendError, BackendUnavailable, get_backend
 from ..cache import get_cache
