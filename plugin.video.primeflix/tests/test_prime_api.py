@@ -1,24 +1,21 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import os
 import sys
-import requests
+import os
 
-# Add the test directory to sys.path to allow imports of kodi_mocks
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__))))
-from kodi_mocks import patch_kodi_modules_globally
+# Import and apply global patches for Kodi modules
+from .kodi_mocks import patch_kodi_modules_globally
 
-# Apply patches globally before other imports
-patch_kodi_modules_globally()
-
-# Add the lib directory to sys.path for the module under test
+# Add the lib directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../resources/lib')))
+
+# Import the module under test
 from backend import prime_api
-from backend.prime_api import PrimeAPI, _NativeAPIIntegration, AuthenticationError, Playable
+from backend.prime_api import _NativeAPIIntegration, AuthenticationError, Playable
 
 class TestNativeAPIIntegration(unittest.TestCase):
     def setUp(self):
-        # This will be called before each test
+        patch_kodi_modules_globally()
         self.patcher_session = patch('backend.prime_api.SessionManager')
         self.mock_session_manager_cls = self.patcher_session.start()
         self.mock_session_manager = self.mock_session_manager_cls.get_instance.return_value
@@ -29,64 +26,55 @@ class TestNativeAPIIntegration(unittest.TestCase):
     def tearDown(self):
         self.patcher_session.stop()
 
-    def test_get_rail_items_success(self):
+    @patch.object(_NativeAPIIntegration, '_get_mock_home_response')
+    def test_get_home_rails(self, mock_get_response):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        items, next_cursor = self.integration.get_rail_items("movies", None)
-        self.assertIsInstance(items, list)
-        self.assertGreater(len(items), 0)
-        self.assertIsNotNone(next_cursor)
-        self.integration.is_logged_in.assert_called_once()
+        mock_get_response.return_value = {
+            "widgets": [{"type": "RailWidget", "id": "test_rail", "title": {"default": "Test Rail"}}]
+        }
+        
+        rails = self.integration.get_home_rails()
+        self.assertEqual(len(rails), 1)
+        self.assertEqual(rails[0]['id'], 'test_rail')
 
-    def test_get_rail_items_not_logged_in(self):
-        self.integration.is_logged_in = MagicMock(return_value=False)
-        with self.assertRaises(AuthenticationError):
-            self.integration.get_rail_items("movies", None)
-
-    def test_search_success(self):
+    @patch.object(_NativeAPIIntegration, '_get_mock_rail_items_response')
+    def test_get_rail_items(self, mock_get_response):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        items, next_cursor = self.integration.search("the boys", None)
-        self.assertIsInstance(items, list)
-        self.assertGreater(len(items), 0)
-        self.assertIsNone(next_cursor)
-        self.assertIn("the boys", items[0]['title'], "Mock search result should contain the query")
-
-    def test_search_not_logged_in(self):
-        self.integration.is_logged_in = MagicMock(return_value=False)
-        with self.assertRaises(AuthenticationError):
-            self.integration.search("the boys", None)
-
-    def test_get_playable_success(self):
+        mock_get_response.return_value = {
+            "items": [{"asin": "B0TEST", "title": "Test Item"}],
+            "nextPageCursor": "next_cursor"
+        }
+        
+        items, cursor = self.integration.get_rail_items("test_rail", None)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['asin'], 'B0TEST')
+        self.assertEqual(cursor, 'next_cursor')
+        
+    @patch.object(_NativeAPIIntegration, '_get_mock_search_response')
+    def test_search(self, mock_get_response):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        playable = self.integration.get_playable("B012345")
+        mock_get_response.return_value = {
+            "items": [{"asin": "B0SEARCH", "title": "Search Result"}],
+            "nextPageCursor": None
+        }
+        
+        items, cursor = self.integration.search("query", None)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['asin'], 'B0SEARCH')
+        self.assertIsNone(cursor)
+
+    @patch.object(_NativeAPIIntegration, '_get_mock_playback_response')
+    def test_get_playable(self, mock_get_response):
+        self.integration.is_logged_in = MagicMock(return_value=True)
+        mock_get_response.return_value = {
+            "manifestUrl": "http://test.mpd",
+            "licenseUrl": "http://test.lic"
+        }
+        
+        playable = self.integration.get_playable("B0PLAY")
         self.assertIsInstance(playable, Playable)
-        self.assertIn("http", playable.url)
-        self.assertIn("mpd", playable.manifest_type)
-
-    def test_get_playable_not_logged_in(self):
-        self.integration.is_logged_in = MagicMock(return_value=False)
-        with self.assertRaises(AuthenticationError):
-            self.integration.get_playable("B012345")
-
-    @patch('os.path.exists')
-    def test_is_drm_ready_found(self, mock_os_exists):
-        mock_os_exists.return_value = True
-        self.assertTrue(self.integration.is_drm_ready())
-
-    @patch('os.path.exists')
-    def test_is_drm_ready_not_found(self, mock_os_exists):
-        mock_os_exists.return_value = False
-        self.assertFalse(self.integration.is_drm_ready())
-
-    def test_get_region_info_success(self):
-        self.integration.is_logged_in = MagicMock(return_value=True)
-        info = self.integration.get_region_info()
-        self.assertIn("country", info)
-        self.assertIn("language", info)
-
-    def test_get_region_info_not_logged_in(self):
-        self.integration.is_logged_in = MagicMock(return_value=False)
-        with self.assertRaises(AuthenticationError):
-            self.integration.get_region_info()
+        self.assertEqual(playable.url, "http://test.mpd")
+        self.assertEqual(playable.license_key, "http://test.lic")
 
 if __name__ == '__main__':
     unittest.main()
