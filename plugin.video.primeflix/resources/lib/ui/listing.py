@@ -144,7 +144,9 @@ def _render_items(
         if item.get("asin"): # Only add if item has an ASIN
             add_to_watchlist_url = context.build_url(action="add_to_watchlist", asin=item["asin"])
             context_menu_items.append((addon.getLocalizedString(32008), f"RunPlugin({add_to_watchlist_url})")) # "Add to Watchlist"
-        
+            mark_as_watched_url = context.build_url(action="mark_as_watched", asin=item["asin"], status="true")
+            context_menu_items.append((addon.getLocalizedString(32009), f"RunPlugin({mark_as_watched_url})")) # "Mark as Watched"
+
         li.addContextMenuItems(context_menu_items)
 
         list_items.append((play_url, li, False))
@@ -187,6 +189,39 @@ def handle_add_to_watchlist(context, asin: str) -> None:
     except BackendError as e:
         dialog.notification(
             addon.getLocalizedString(32008),
+            str(e),
+            xbmcgui.NOTIFICATION_ERROR
+        )
+
+
+def handle_mark_as_watched(context, asin: str, status: bool) -> None:
+    """Handles marking an item as watched or unwatched."""
+    addon = xbmcaddon.Addon()
+    dialog = xbmcgui.Dialog()
+    backend = get_backend()
+
+    try:
+        if backend.mark_as_watched(asin, status):
+            dialog.notification(
+                addon.getLocalizedString(32009), # "Mark as Watched"
+                addon.getLocalizedString(32003), # "Login Successful" (re-purposing for success)
+                xbmcgui.NOTIFICATION_INFO
+            )
+        else:
+            dialog.notification(
+                addon.getLocalizedString(32009),
+                addon.getLocalizedString(32005), # "Login Failed" (re-purposing for failure)
+                xbmcgui.NOTIFICATION_ERROR
+            )
+    except AuthenticationError:
+        dialog.notification(
+            addon.getLocalizedString(32009),
+            addon.getLocalizedString(21090), # "Please log in..."
+            xbmcgui.NOTIFICATION_WARNING
+        )
+    except BackendError as e:
+        dialog.notification(
+            addon.getLocalizedString(32009),
             str(e),
             xbmcgui.NOTIFICATION_ERROR
         )

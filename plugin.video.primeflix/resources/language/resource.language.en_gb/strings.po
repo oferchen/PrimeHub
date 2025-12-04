@@ -54,6 +54,8 @@ msgid "#32007"
 msgstr "Logout"
 msgid "#32008"
 msgstr "Add to Watchlist"
+msgid "#32009"
+msgstr "Mark as Watched"
 
 # Preflight/Error messages (re-purposed for native backend)
 msgid "#21090"

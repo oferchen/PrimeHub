@@ -12,6 +12,12 @@ import json # Required for session serialization
 import os   # Required for file path operations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+import sys
+
+# Add vendor directory to sys.path for bundled libraries
+vendor_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'vendor'))
+if vendor_path not in sys.path:
+    sys.path.insert(0, vendor_path)
 
 # Import requests for making HTTP calls. Note: This library will need to be
 # bundled with the Kodi add-on or ensured as a dependency.
@@ -196,6 +202,18 @@ class _NativeAPIIntegration:
         # TODO: Implement actual API call to add to watchlist.
         return True # Mock success
 
+    def mark_as_watched(self, asin: str, watched_status: bool) -> bool:
+        """
+        Marks an item as watched or unwatched.
+        This is a stub and needs a real implementation.
+        """
+        if not self.is_logged_in():
+            raise AuthenticationError("User is not logged in.")
+        status = "watched" if watched_status else "unwatched"
+        _log(xbmc.LOGINFO, f"Marking {asin} as {status} (stub).")
+        # TODO: Implement actual API call to mark as watched.
+        return True # Mock success
+
 
 # --- Facade & Singleton Patterns ---
 
@@ -225,6 +243,9 @@ class PrimeAPI:
 
     def add_to_watchlist(self, asin: str) -> bool:
         return self._strategy.add_to_watchlist(asin)
+
+    def mark_as_watched(self, asin: str, watched_status: bool) -> bool:
+        return self._strategy.mark_as_watched(asin, watched_status)
 
     # ... Other facade methods mirroring the strategy ...
 

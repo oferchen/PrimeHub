@@ -89,6 +89,11 @@ def dispatch(base_url: str, param_string: str) -> None:
             asin = params.get("asin")
             if asin:
                 listing.handle_add_to_watchlist(context, asin)
+        elif action == "mark_as_watched":
+            asin = params.get("asin")
+            status = params.get("status") == "true"
+            if asin:
+                listing.handle_mark_as_watched(context, asin, status)
         else: # Default action
             home.show_home(context)
 

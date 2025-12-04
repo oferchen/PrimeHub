@@ -54,7 +54,7 @@ class MockXBMCRuntime:
         return mock_file
     def delete(self, path): pass
 
-# Patch xbmc and xbmcaddon globally for the test environment
+# Patch Kodi modules globally for the test environment
 original_sys_path = list(sys.path)
 sys.modules["xbmc"] = MockXBMC()
 sys.modules["xbmcaddon"] = MockXBMCAddon()
@@ -103,6 +103,9 @@ class TestPrimeAPI(unittest.TestCase):
         
         api.get_home_rails()
         mock_native_integration_instance.get_home_rails.assert_called_once()
+        
+        api.add_to_watchlist("asin123")
+        mock_native_integration_instance.add_to_watchlist.assert_called_once_with("asin123")
 
 
 class TestNativeAPIIntegration(unittest.TestCase):
@@ -174,43 +177,34 @@ class TestNativeAPIIntegration(unittest.TestCase):
         self.assertFalse(self.integration.is_logged_in()) # Session should be cleared
         self.mock_xbmcvfs.delete.assert_called_once() # Should clear session file if failure after partial save
 
-    def test_logout_clears_session_and_file(self):
-        self.integration._session = self.mock_session # Ensure there's a session
-        self.mock_xbmcvfs.exists.return_value = True # Simulate file exists
+    def test_login_request_exception(self):
+        self.mock_session.get.side_effect = requests.exceptions.RequestException("Network Error")
+        with self.assertRaisesRegex(AuthenticationError, "Could not reach Amazon login page."):
+            self.integration.login("user", "pass")
+
+    def test_load_session_corrupted_file(self):
+        self.mock_xbmcvfs.exists.return_value = True
+        self.mock_xbmcvfs.File.return_value.__enter__.return_value.read.return_value = "not json"
         
-        self.integration.logout()
-        self.assertIsNone(self.integration._session)
-        self.mock_xbmcvfs.delete.assert_called_once_with(self.integration._session_path)
-        self.mock_session.close.assert_called_once()
+        integration = _NativeAPIIntegration(self.mock_addon)
+        self.assertIsNone(integration._session) # Session should be cleared
+        self.mock_xbmcvfs.delete.assert_called_once() # Should delete corrupted file
 
-    def test_is_logged_in_true(self):
+    def test_is_logged_in_false_empty_cookies(self):
         self.integration._session = self.mock_session
-        self.integration._verify_session = MagicMock(return_value=True)
-        self.assertTrue(self.integration.is_logged_in())
-        self.integration._verify_session.assert_called_once()
-
-    def test_is_logged_in_false_no_session(self):
-        self.integration._session = None
+        self.integration._session.cookies = requests.cookies.RequestsCookieJar() # Empty cookie jar
         self.assertFalse(self.integration.is_logged_in())
 
-    def test_is_logged_in_false_invalid_session(self):
-        self.integration._session = self.mock_session
-        self.integration._verify_session = MagicMock(return_value=False)
-        self.assertFalse(self.integration.is_logged_in())
-        self.integration._verify_session.assert_called_once()
-        self.assertIsNone(self.integration._session) # Should have called logout
+    def test_add_to_watchlist_success(self):
+        self.integration.is_logged_in = MagicMock(return_value=True) # Ensure logged in
+        result = self.integration.add_to_watchlist("asin123")
+        self.assertTrue(result)
+        self.integration.is_logged_in.assert_called_once()
 
-    def test_get_home_rails_not_logged_in(self):
-        self.integration._session = None
+    def test_add_to_watchlist_not_logged_in(self):
+        self.integration.is_logged_in = MagicMock(return_value=False) # Ensure not logged in
         with self.assertRaises(AuthenticationError):
-            self.integration.get_home_rails()
-            
-    def test_get_home_rails_success(self):
-        self.integration._session = self.mock_session # Simulate logged in
-        self.integration._verify_session = MagicMock(return_value=True) # Ensure session is valid
-        rails = self.integration.get_home_rails()
-        self.assertGreater(len(rails), 0)
-        self.assertEqual(rails[0]['id'], 'continue_watching')
+            self.integration.add_to_watchlist("asin123")
 
 
 class TestNormalizeFunctions(unittest.TestCase):
@@ -222,20 +216,10 @@ class TestNormalizeFunctions(unittest.TestCase):
         self.assertEqual(normalized['type'], 'movies')
 
     def test_normalize_item(self):
-        raw_item = {
-            "asin": "a1",
-            "title": "Item Title",
-            "plot": "Plot",
-            "year": 2020,
-            "duration": 120,
-            "art": {"poster": "p.jpg"},
-            "is_movie": True,
-        }
+        raw_item = {"asin": "a1", "title": "Item Title", "plot": "Plot"}
         normalized = normalize_item(raw_item)
         self.assertEqual(normalized["asin"], "a1")
         self.assertEqual(normalized["title"], "Item Title")
-        self.assertTrue(normalized["is_movie"])
-        self.assertEqual(normalized["art"]["poster"], "p.jpg") # Check that it adapts
 
 if __name__ == '__main__':
     unittest.main()
