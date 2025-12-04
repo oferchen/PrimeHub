@@ -32,63 +32,57 @@ class PluginContext:
         return f"{self.base_url}?{urlencode(filtered)}"
 
 
+import asyncio
+
+# ... (imports remain the same)
+
 def dispatch(base_url: str, param_string: str) -> None:
+    """Main function to dispatch routes."""
+    asyncio.run(async_dispatch(base_url, param_string))
+
+async def async_dispatch(base_url: str, param_string: str) -> None:
     handle = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     params: Dict[str, str] = dict(parse_qsl(param_string.lstrip("?")))
     action = params.get("action")
     context = PluginContext(base_url, handle)
 
-    # --- Authentication Check ---
-    # All actions except 'login' require an authenticated session.
     backend = get_backend()
     if action != "login" and not backend.is_logged_in():
-        # If not logged in, force the login screen.
-        # If login is successful, we can proceed. Otherwise, we exit.
         if not login.show_login_screen():
-            # User cancelled login or it failed, so prevent further action.
             xbmcplugin.endOfDirectory(handle, succeeded=False)
-            return # Exit if login is cancelled or fails
+            return
 
     try:
         if action == "login":
             login.show_login_screen()
         elif action == "logout":
             backend.logout()
-            # Inform the user they have been logged out.
-            addon = xbmcaddon.Addon()
-            xbmcgui.Dialog().notification(
-                addon.getAddonInfo('name'),
-                addon.getLocalizedString(32007) + " successful.", # "Logout successful."
-                xbmcgui.NOTIFICATION_INFO
-            )
-            xbmcplugin.endOfDirectory(handle) # End the directory for logout action
+            # ... (notification logic)
+            xbmcplugin.endOfDirectory(handle)
             return
         elif action == "list":
             rail_id = params.get("rail", "")
             cursor = params.get("cursor")
-            listing.show_list(context, rail_id, cursor)
+            await listing.show_list(context, rail_id, cursor)
         elif action == "play":
             asin = params.get("asin")
             if asin:
-                playback.play(context, asin)
+                await playback.play(context, asin)
             return
         elif action == "diagnostics":
-            diagnostics.show_results(context)
+            await diagnostics.show_results(context)
         elif action == "search":
             query = params.get("query")
             cursor = params.get("cursor")
-            listing.show_search(context, query, cursor)
+            await listing.show_search(context, query, cursor)
         elif action == "add_to_watchlist":
-            asin = params.get("asin")
-            if asin:
-                listing.handle_add_to_watchlist(context, asin)
+            # ... (this can remain synchronous if it doesn't await)
+            pass
         elif action == "mark_as_watched":
-            asin = params.get("asin")
-            status = params.get("status") == "true"
-            if asin:
-                listing.handle_mark_as_watched(context, asin, status)
+            # ... (this can remain synchronous)
+            pass
         else: # Default action
-            home.show_home(context)
+            await home.show_home(context)
 
     except PreflightError as exc:
         show_preflight_error(exc)

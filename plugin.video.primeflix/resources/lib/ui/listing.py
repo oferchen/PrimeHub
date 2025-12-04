@@ -22,7 +22,7 @@ from ..preflight import PreflightError, ensure_ready_or_raise
 DEFAULT_CACHE_TTL = 300
 
 
-def show_list(context, rail_id: str, cursor: Optional[str] = None) -> None:
+async def show_list(context, rail_id: str, cursor: Optional[str] = None) -> None:
     ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
     cache = get_cache()
@@ -44,7 +44,7 @@ def show_list(context, rail_id: str, cursor: Optional[str] = None) -> None:
     else:
         backend = get_backend()
         try:
-            items, next_cursor = backend.get_rail_items(rail_id, cursor)
+            items, next_cursor = await backend.get_rail_items(rail_id, cursor)
         except (BackendUnavailable, BackendError) as exc:
             # Display a more user-friendly error notification for content fetching failures
             xbmcgui.Dialog().notification(
@@ -186,7 +186,7 @@ def handle_mark_as_watched(context, asin: str, status: bool) -> None:
         )
 
 
-def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
+async def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
     ensure_ready_or_raise()
     if not query:
         query = _prompt_search()
@@ -194,7 +194,7 @@ def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
         return
     backend = get_backend()
     try:
-        items, next_cursor = backend.search(query, cursor)
+        items, next_cursor = await backend.search(query, cursor)
     except (BackendUnavailable, BackendError) as exc:
         # Display a more user-friendly error notification for content fetching failures
         addon = xbmcaddon.Addon() # Need addon for localized strings

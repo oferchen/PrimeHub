@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 import sys
 import os
 
@@ -26,52 +26,53 @@ class TestNativeAPIIntegration(unittest.TestCase):
     def tearDown(self):
         self.patcher_session.stop()
 
-    @patch.object(_NativeAPIIntegration, '_get_mock_home_response')
-    def test_get_home_rails(self, mock_get_response):
+    @patch.object(_NativeAPIIntegration, '_handle_request', new_callable=AsyncMock)
+    async def test_get_home_rails(self, mock_handle_request):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        mock_get_response.return_value = {
+        mock_handle_request.return_value = {
             "widgets": [{"type": "RailWidget", "id": "test_rail", "title": {"default": "Test Rail"}}]
         }
         
-        rails = self.integration.get_home_rails()
+        rails = await self.integration.get_home_rails()
         self.assertEqual(len(rails), 1)
         self.assertEqual(rails[0]['id'], 'test_rail')
+        mock_handle_request.assert_awaited_once()
 
-    @patch.object(_NativeAPIIntegration, '_get_mock_rail_items_response')
-    def test_get_rail_items(self, mock_get_response):
+    @patch.object(_NativeAPIIntegration, '_handle_request', new_callable=AsyncMock)
+    async def test_get_rail_items(self, mock_handle_request):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        mock_get_response.return_value = {
+        mock_handle_request.return_value = {
             "items": [{"asin": "B0TEST", "title": "Test Item"}],
             "nextPageCursor": "next_cursor"
         }
         
-        items, cursor = self.integration.get_rail_items("test_rail", None)
+        items, cursor = await self.integration.get_rail_items("test_rail", None)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['asin'], 'B0TEST')
         self.assertEqual(cursor, 'next_cursor')
         
-    @patch.object(_NativeAPIIntegration, '_get_mock_search_response')
-    def test_search(self, mock_get_response):
+    @patch.object(_NativeAPIIntegration, '_handle_request', new_callable=AsyncMock)
+    async def test_search(self, mock_handle_request):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        mock_get_response.return_value = {
+        mock_handle_request.return_value = {
             "items": [{"asin": "B0SEARCH", "title": "Search Result"}],
             "nextPageCursor": None
         }
         
-        items, cursor = self.integration.search("query", None)
+        items, cursor = await self.integration.search("query", None)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['asin'], 'B0SEARCH')
         self.assertIsNone(cursor)
 
-    @patch.object(_NativeAPIIntegration, '_get_mock_playback_response')
-    def test_get_playable(self, mock_get_response):
+    @patch.object(_NativeAPIIntegration, '_handle_request', new_callable=AsyncMock)
+    async def test_get_playable(self, mock_handle_request):
         self.integration.is_logged_in = MagicMock(return_value=True)
-        mock_get_response.return_value = {
+        mock_handle_request.return_value = {
             "manifestUrl": "http://test.mpd",
             "licenseUrl": "http://test.lic"
         }
         
-        playable = self.integration.get_playable("B0PLAY")
+        playable = await self.integration.get_playable("B0PLAY")
         self.assertIsInstance(playable, Playable)
         self.assertEqual(playable.url, "http://test.mpd")
         self.assertEqual(playable.license_key, "http://test.lic")

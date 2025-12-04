@@ -24,12 +24,12 @@ INPUTSTREAM_ID = "inputstream.adaptive"
 
 
 @timed("playback_handoff")
-def play(context, asin: str) -> None:
+async def play(context, asin: str) -> None:
     ensure_ready_or_raise()
     addon = xbmcaddon.Addon() # Need addon for localized strings
     backend = get_backend()
     try:
-        playable = backend.get_playable(asin)
+        playable = await backend.get_playable(asin)
     except (BackendUnavailable, BackendError) as exc:
         # Display a more user-friendly error notification for content fetching failures
         xbmcgui.Dialog().notification(

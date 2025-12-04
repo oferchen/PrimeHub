@@ -26,7 +26,7 @@ from .home import fetch_home_rails
 
 
 @timed("diagnostics")
-def show_results(context) -> None:
+async def show_results(context) -> None:
     ensure_ready_or_raise()
     backend = get_backend()
     cache = get_cache()
@@ -41,7 +41,7 @@ def show_results(context) -> None:
         warm = idx > 0
         start = time.perf_counter()
 
-        fetch_home_rails(addon, cache)
+        await fetch_home_rails(addon, cache)
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         log_duration(

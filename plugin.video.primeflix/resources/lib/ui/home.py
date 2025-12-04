@@ -23,7 +23,7 @@ from ..perf import timed
 from ..preflight import PreflightError, ensure_ready_or_raise
 
 
-def fetch_home_rails(
+async def fetch_home_rails(
     addon: xbmcaddon.Addon, cache: Cache
 ) -> List[Dict[str, Any]]:
     """Fetch home rails from cache or backend, mapping to Netflix-style categories."""
@@ -43,7 +43,7 @@ def fetch_home_rails(
     raw_rails: List[Dict[str, Any]]
     try:
         backend = get_backend()
-        raw_rails = backend.get_home_rails()
+        raw_rails = await backend.get_home_rails()
     except (BackendError, BackendUnavailable):
         # Fallback for when the native backend fails to return rails
         raw_rails = [
@@ -112,7 +112,7 @@ def fetch_home_rails(
 
 
 @timed("home_build")
-def show_home(context) -> None:
+async def show_home(context) -> None:
     """Build and display PrimeHub home with Netflix-style rails."""
     ensure_ready_or_raise()
     addon = xbmcaddon.Addon()
@@ -120,7 +120,7 @@ def show_home(context) -> None:
 
     xbmcplugin.setContent(context.handle, "videos")
 
-    rails = fetch_home_rails(addon, cache)
+    rails = await fetch_home_rails(addon, cache)
     addon_fanart = addon.getAddonInfo("fanart")
 
     list_items = []
