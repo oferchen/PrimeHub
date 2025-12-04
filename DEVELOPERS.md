@@ -25,8 +25,11 @@ The native backend uses the `requests` library for HTTP communication. Since Kod
    ```
 3. Ensure this vendor directory is added to Python's path at the top of `prime_api.py`:
    ```python
-   # In prime_api.py
-   sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
+   # In prime_api.py (located in resources/lib/backend/)
+   # vendor_path is resources/lib/vendor/
+   vendor_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vendor'))
+   if vendor_path not in sys.path:
+       sys.path.insert(0, vendor_path)
    import requests
    ```
 

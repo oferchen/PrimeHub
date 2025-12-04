@@ -99,19 +99,18 @@ All agents must strictly follow:
 ## 3. Agent: Preflight & Capability
 
 **Alias:** `preflight-agent`  
-**Goal:** Implement `preflight.py` to verify the environment (backend installed, `inputstream.adaptive` present, DRM readiness) and fail fast with a single clear error.
+**Goal:** Implement `preflight.py` to verify the environment (active login session, `inputstream.adaptive` present, DRM readiness) and fail fast with a single clear error.
 
 ### Responsibilities
 
 - Implement `ensure_ready_or_raise()` that:
 
-  1. Checks that the backend add-on is available:
-     - Via import or Kodi JSON-RPC (`Addons.GetAddons`).
+  1. Checks that the user has an **active login session** via `backend.is_logged_in()`.
   2. Checks for `inputstream.adaptive` presence/enabled.
-  3. Optionally queries backend for DRM readiness / region info.
+  3. Queries backend for DRM readiness (`backend.is_drm_ready()`).
   4. On failure:
      - Raises a well-defined exception (e.g. `PreflightError`) with a user-friendly message.
-     - Message must advise the user to open and configure/log in to the existing Prime add-on and/or enable `inputstream.adaptive`.
+     - Message must advise the user to log in via the add-on's UI and/or enable `inputstream.adaptive`.
 
 - Implement a helper that **displays** this failure in a Kodi-friendly way:
   - Either dialog or notification, then cleanly returns from the current route.
@@ -370,7 +369,7 @@ All agents must strictly follow:
 ## 10. Agent: Manifest & Packaging
 
 **Alias:** `manifest-agent`  
-**Goal:** Implement `addon.xml` and basic metadata (icon/fanart placeholders) so the add-on installs and appears correctly in Kodi.
+**Goal:** Implement `addon.xml` and basic metadata (icon/fanart placeholders) so the add-on installs and appears correctly in Kodi, and ensure all necessary dependencies are properly bundled.
 
 ### Responsibilities
 
@@ -380,7 +379,7 @@ All agents must strictly follow:
   - Name, version (e.g. `1.0.0`).
   - Type: `xbmc.addon.video`.
   - Depend on correct `xbmc.python` version for Kodi 21.
-  - Declare summary/description that clearly states it requires an existing Prime/“Amazon VOD” add-on and is not official.
+  - Declare summary/description that clearly states it implements a native backend and is not official.
 
 - Provide references for:
 
@@ -388,6 +387,7 @@ All agents must strictly follow:
   - `fanart.jpg`
 
 - Ensure all file paths and imports match the folder structure defined by Architect.
+- **Dependency Bundling:** Ensure the `requests` Python library and its dependencies are properly bundled into `resources/lib/vendor/` for a self-contained distribution.
 
 ### Input
 
@@ -396,6 +396,7 @@ All agents must strictly follow:
 ### Output
 
 - Valid `addon.xml` and consistent metadata.
+- A distributable add-on package that includes all necessary Python dependencies.
 
 ---
 
