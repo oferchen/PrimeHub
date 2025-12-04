@@ -1,77 +1,57 @@
-"""
-Native backend for Prime Video, communicating directly with Amazon's APIs.
-"""
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-import sys
-import os
-
-# Add vendor directory to sys.path for bundled libraries
-vendor_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vendor'))
-if vendor_path not in sys.path:
-    sys.path.insert(0, vendor_path)
-
-import requests
-from .session import SessionManager # Use the new SessionManager
-
-try:
-    import xbmc
-    import xbmcaddon
-except ImportError:
-    from ...tests.kodi_mocks import xbmc, xbmcaddon
-
-# (Data Models and Exceptions remain the same)
+# (beginning of prime_api.py is unchanged)
 
 class _NativeAPIIntegration:
-    """
-    The concrete implementation of the backend communication strategy.
-    """
-    def __init__(self, addon: xbmcaddon.Addon) -> None:
-        self._addon = addon
-        self._session_manager = SessionManager.get_instance()
-        self._session = self._session_manager.get_session()
+    # ... (other methods are unchanged)
 
-    def login(self, username: str, password: str) -> bool:
-        """Handles the authentication flow with Amazon."""
-        _log(xbmc.LOGINFO, f"Attempting login for user: {username}")
+    def is_drm_ready(self) -> Optional[bool]:
+        """
+        Checks if the required DRM system (Widevine) is available.
+        This is a stub and should be adapted for the target system.
+        """
+        _log(xbmc.LOGINFO, "Checking for DRM readiness (mock).")
+        # TODO: Implement a real check for Widevine CDM. The path and method
+        # for checking will vary significantly by operating system (Android,
+        # Linux, Windows, etc.) and Kodi version.
         
-        # Logout to ensure a fresh session
-        self._session_manager.logout()
-        self._session = self._session_manager.get_session()
-
-        # ... (stubbed login logic remains the same)
-        # On success:
-        self._session_manager.save_session()
-        return True
-
-    def logout(self) -> None:
-        """Delegates logout to the SessionManager."""
-        self._session_manager.logout()
-        self._session = None # Ensure local reference is cleared
-
-    def is_logged_in(self) -> bool:
-        """Checks if a valid session exists via the SessionManager."""
-        # A more robust check would ping a protected Amazon endpoint.
-        session = self._session_manager.get_session()
-        return session is not None and len(session.cookies) > 0
-
-    # ... (other stubbed methods remain the same)
-    def get_home_rails(self) -> List[Dict[str, Any]]:
-        if not self.is_logged_in():
-            raise AuthenticationError("User is not logged in.")
-        return []
-
-    def add_to_watchlist(self, asin: str) -> bool:
-        if not self.is_logged_in():
-            raise AuthenticationError("User is not logged in.")
-        return True
+        # Example check for a common Linux path for the Widevine CDM library.
+        # This path is NOT guaranteed to be correct.
+        widevine_cdm_paths = [
+            # Example path on some Linux systems
+            os.path.join(xbmc.translatePath('special://home'), 'cdm/libwidevinecdm.so'),
+            # Example path on some Android systems
+            '/data/data/com.android.chrome/app_widevine/libwidevinecdm.so',
+        ]
         
-    def mark_as_watched(self, asin: str, watched_status: bool) -> bool:
+        for path in widevine_cdm_paths:
+            if os.path.exists(path):
+                _log(xbmc.LOGINFO, f"Found potential Widevine library at: {path}")
+                return True
+        
+        _log(xbmc.LOGWARNING, "Widevine CDM library not found at common paths.")
+        return False # Default to false if not found
+
+    def get_region_info(self) -> Dict[str, Any]:
+        """
+        Fetches user's region/country from the backend.
+        This is a stub and needs a real implementation.
+        """
         if not self.is_logged_in():
             raise AuthenticationError("User is not logged in.")
-        return True
+        
+        _log(xbmc.LOGINFO, "Fetching region info (mock data).")
+        # TODO: Implement actual API call to an endpoint that returns profile/region data.
+        return {"country": "US", "language": "en"} # Mock response
 
-# (PrimeAPI Facade, get_backend Singleton, and Adapters remain the same)
-# ... (rest of the file)
+
+# --- Facade & Singleton Patterns ---
+
+class PrimeAPI:
+    # ... (other methods are unchanged)
+    
+    def is_drm_ready(self) -> Optional[bool]:
+        return self._strategy.is_drm_ready()
+        
+    def get_region_info(self) -> Dict[str, Any]:
+        return self._strategy.get_region_info()
+
+# ... (rest of the file is unchanged)

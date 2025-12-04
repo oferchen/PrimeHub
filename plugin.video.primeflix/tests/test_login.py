@@ -3,25 +3,8 @@ from unittest.mock import MagicMock, patch
 import sys
 import os
 
-# Mock Kodi imports for testing outside Kodi
-class MockXBMC:
-    LOGDEBUG, LOGINFO, LOGWARNING, LOGERROR = 0, 1, 2, 3
-    def log(self, message: str, level: int = 0) -> None: pass
-
-class MockXBMCAddon:
-    def Addon(self, addon_id=None):
-        mock_addon = MagicMock()
-        mock_addon.getLocalizedString.side_effect = lambda code: f"LocalizedString_{code}"
-        return mock_addon
-
-class MockXBMCGUI:
-    INPUT_PASSWORD = 1
-    Dialog = MagicMock()
-
-# Patch Kodi modules globally before other imports
-sys.modules['xbmc'] = MockXBMC()
-sys.modules['xbmcaddon'] = MockXBMCAddon()
-sys.modules['xbmcgui'] = MockXBMCGUI()
+# Import and apply global patches for Kodi modules
+from .kodi_mocks import patch_kodi_modules_globally, MockXBMCGUI
 
 # Add the lib directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../resources/lib')))
@@ -34,8 +17,7 @@ class TestUILogin(unittest.TestCase):
 
     def setUp(self):
         # Reset mocks before each test
-        sys.modules['xbmcaddon'].Addon.reset_mock()
-        sys.modules['xbmcgui'].Dialog.reset_mock()
+        patch_kodi_modules_globally()
         
         # Patch get_backend
         self.patcher_get_backend = patch('ui.login.get_backend')
@@ -48,7 +30,7 @@ class TestUILogin(unittest.TestCase):
         sys.modules['xbmcgui'].Dialog.return_value = self.mock_dialog_instance
 
     def tearDown(self):
-        self.patcher_get_backend.stop()
+        patch.stopall()
 
     def test_show_login_screen_success(self):
         self.mock_dialog_instance.input.side_effect = ["testuser", "testpass"]
@@ -59,7 +41,7 @@ class TestUILogin(unittest.TestCase):
         
         self.assertEqual(self.mock_dialog_instance.input.call_count, 2)
         self.mock_dialog_instance.input.assert_any_call("LocalizedString_32001")
-        self.mock_dialog_instance.input.assert_any_call("LocalizedString_32002", option=sys.modules['xbmcgui'].INPUT_PASSWORD)
+        self.mock_dialog_instance.input.assert_any_call("LocalizedString_32002", option=MockXBMCGUI.INPUT_PASSWORD)
         self.mock_backend_instance.login.assert_called_once_with("testuser", "testpass")
         self.mock_dialog_instance.ok.assert_called_once_with("LocalizedString_32003", "LocalizedString_32004")
 
@@ -81,7 +63,7 @@ class TestUILogin(unittest.TestCase):
         
         self.assertEqual(self.mock_dialog_instance.input.call_count, 2)
         self.mock_dialog_instance.input.assert_any_call("LocalizedString_32001")
-        self.mock_dialog_instance.input.assert_any_call("LocalizedString_32002", option=sys.modules['xbmcgui'].INPUT_PASSWORD)
+        self.mock_dialog_instance.input.assert_any_call("LocalizedString_32002", option=MockXBMCGUI.INPUT_PASSWORD)
         self.mock_backend_instance.login.assert_not_called()
         self.mock_dialog_instance.ok.assert_not_called()
 

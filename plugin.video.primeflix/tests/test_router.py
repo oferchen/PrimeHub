@@ -1,32 +1,13 @@
 import unittest
 from unittest.mock import MagicMock, patch
-
-# Mock Kodi imports and environment for testing outside Kodi
-class MockXBMCPlugin:
-    SORT_METHOD_UNSORTED = 0
-    def addDirectoryItems(self, handle, items): pass
-    def endOfDirectory(self, handle, succeeded=True): pass
-    def setContent(self, handle, content): pass
-    def setResolvedUrl(self, handle, succeeded, listitem): pass
-
-class MockXBMC:
-    LOGDEBUG, LOGINFO, LOGWARNING, LOGERROR = 0, 1, 2, 3
-    def log(self, message: str, level: int = 0) -> None: pass
-
-# Patch Kodi modules globally before other imports
-sys.modules = {
-    'xbmcplugin': MagicMock(spec=MockXBMCPlugin),
-    'xbmc': MockXBMC(),
-    'xbmcaddon': MagicMock(),
-    'xbmcgui': MagicMock()
-}
-
-# Set up sys.argv for router to parse
 import sys
-sys.argv = ['default.py', '1', '']
-
-# Add the lib directory to sys.path so we can import router
 import os
+
+# Import and apply global patches for Kodi modules
+from .kodi_mocks import patch_kodi_modules_globally
+patch_kodi_modules_globally()
+
+# Add the lib directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../resources/lib')))
 
 # Import the module under test AFTER setting up mocks
