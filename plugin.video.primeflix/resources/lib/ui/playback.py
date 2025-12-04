@@ -46,10 +46,17 @@ INPUTSTREAM_ID = "inputstream.adaptive"
 @timed("playback_handoff")
 def play(context, asin: str) -> None:
     ensure_ready_or_raise()
+    addon = xbmcaddon.Addon() # Need addon for localized strings
     backend = get_backend()
     try:
         playable = backend.get_playable(asin)
     except (BackendUnavailable, BackendError) as exc:
+        # Display a more user-friendly error notification for content fetching failures
+        xbmcgui.Dialog().notification(
+            addon.getLocalizedString(32005), # "Login Failed" (re-purposed for error)
+            addon.getLocalizedString(41000), # New string for "Content Unavailable"
+            xbmcgui.NOTIFICATION_ERROR
+        )
         raise PreflightError(str(exc))
 
     list_item = _build_list_item(playable)

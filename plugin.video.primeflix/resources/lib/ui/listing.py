@@ -87,7 +87,13 @@ def show_list(context, rail_id: str, cursor: Optional[str] = None) -> None:
         try:
             items, next_cursor = backend.get_rail_items(rail_id, cursor)
         except (BackendUnavailable, BackendError) as exc:
-            raise PreflightError(str(exc))
+            # Display a more user-friendly error notification for content fetching failures
+            xbmcgui.Dialog().notification(
+                addon.getLocalizedString(32005), # "Login Failed" (re-purposed for error)
+                addon.getLocalizedString(41000), # New string for "Content Unavailable"
+                xbmcgui.NOTIFICATION_ERROR
+            )
+            raise PreflightError(str(exc)) # Re-raise for router to handle
         if use_cache:
             cache.set(cache_key, {"items": items, "next": next_cursor}, cache_ttl)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -110,6 +116,8 @@ def _render_items(
     content_type = _infer_content(items)
     xbmcplugin.setContent(context.handle, content_type)
 
+    addon = xbmcaddon.Addon()
+
     list_items = []
     for item in items:
         label = item.get("title", "")
@@ -130,6 +138,15 @@ def _render_items(
             },
         )
         play_url = context.build_url(action="play", asin=item.get("asin", ""))
+
+        # Add Context Menu Items
+        context_menu_items = []
+        if item.get("asin"): # Only add if item has an ASIN
+            add_to_watchlist_url = context.build_url(action="add_to_watchlist", asin=item["asin"])
+            context_menu_items.append((addon.getLocalizedString(32008), f"RunPlugin({add_to_watchlist_url})")) # "Add to Watchlist"
+        
+        li.addContextMenuItems(context_menu_items)
+
         list_items.append((play_url, li, False))
 
     if next_cursor:
@@ -142,6 +159,39 @@ def _render_items(
     xbmcplugin.addDirectoryItems(context.handle, list_items)
 
 
+def handle_add_to_watchlist(context, asin: str) -> None:
+    """Handles adding an item to the watchlist."""
+    addon = xbmcaddon.Addon()
+    dialog = xbmcgui.Dialog()
+    backend = get_backend()
+
+    try:
+        if backend.add_to_watchlist(asin):
+            dialog.notification(
+                addon.getLocalizedString(32008), # "Add to Watchlist"
+                addon.getLocalizedString(32003), # "Login Successful" (re-purposing for success)
+                xbmcgui.NOTIFICATION_INFO
+            )
+        else:
+            dialog.notification(
+                addon.getLocalizedString(32008),
+                addon.getLocalizedString(32005), # "Login Failed" (re-purposing for failure)
+                xbmcgui.NOTIFICATION_ERROR
+            )
+    except AuthenticationError:
+        dialog.notification(
+            addon.getLocalizedString(32008),
+            addon.getLocalizedString(21090), # "Please log in..."
+            xbmcgui.NOTIFICATION_WARNING
+        )
+    except BackendError as e:
+        dialog.notification(
+            addon.getLocalizedString(32008),
+            str(e),
+            xbmcgui.NOTIFICATION_ERROR
+        )
+
+
 def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
     ensure_ready_or_raise()
     if not query:
@@ -152,7 +202,14 @@ def show_search(context, query: Optional[str], cursor: Optional[str]) -> None:
     try:
         items, next_cursor = backend.search(query, cursor)
     except (BackendUnavailable, BackendError) as exc:
-        raise PreflightError(str(exc))
+        # Display a more user-friendly error notification for content fetching failures
+        addon = xbmcaddon.Addon() # Need addon for localized strings
+        xbmcgui.Dialog().notification(
+            addon.getLocalizedString(32005), # "Login Failed" (re-purposed for error)
+            addon.getLocalizedString(41000), # New string for "Content Unavailable"
+            xbmcgui.NOTIFICATION_ERROR
+        )
+        raise PreflightError(str(exc)) # Re-raise for router to handle
     _render_items(context, items, next_cursor, "search")
 
 

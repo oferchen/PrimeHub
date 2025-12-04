@@ -139,12 +139,8 @@ def fetch_home_rails(
                 }
             )
 
-    # Append any other rails that were returned by the backend but not in our desired list
-    existing_mapped_ids = {r["id"] for r in mapped_rails}
-    for rail in raw_rails:
-        if rail["id"] not in existing_mapped_ids:
-            mapped_rails.append(rail)
-
+    # Only display the desired rails in the specified order.
+    # Unmapped rails from the backend will be ignored.
     if use_cache:
         cache.set(cache_key, mapped_rails, ttl_seconds=cache_ttl)
     return mapped_rails

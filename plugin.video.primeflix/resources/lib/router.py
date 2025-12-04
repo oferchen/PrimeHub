@@ -85,6 +85,10 @@ def dispatch(base_url: str, param_string: str) -> None:
             query = params.get("query")
             cursor = params.get("cursor")
             listing.show_search(context, query, cursor)
+        elif action == "add_to_watchlist":
+            asin = params.get("asin")
+            if asin:
+                listing.handle_add_to_watchlist(context, asin)
         else: # Default action
             home.show_home(context)
 

@@ -185,8 +185,16 @@ class _NativeAPIIntegration:
             {"id": "tv", "title": "TV Shows", "type": "tv"},
         ]
 
-    # ... Other methods like get_rail_items, get_playable, search would follow ...
-    # These would also be stubs for now.
+    def add_to_watchlist(self, asin: str) -> bool:
+        """
+        Adds an item to the user's watchlist.
+        This is a stub and needs a real implementation.
+        """
+        if not self.is_logged_in():
+            raise AuthenticationError("User is not logged in.")
+        _log(xbmc.LOGINFO, f"Adding {asin} to watchlist (stub).")
+        # TODO: Implement actual API call to add to watchlist.
+        return True # Mock success
 
 
 # --- Facade & Singleton Patterns ---
@@ -214,6 +222,9 @@ class PrimeAPI:
         # The Facade calls the strategy, and the Adapter normalizes the data
         raw_rails = self._strategy.get_home_rails()
         return [normalize_rail(rail) for rail in raw_rails]
+
+    def add_to_watchlist(self, asin: str) -> bool:
+        return self._strategy.add_to_watchlist(asin)
 
     # ... Other facade methods mirroring the strategy ...
 
