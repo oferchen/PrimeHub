@@ -4,7 +4,7 @@ import sys
 import os
 
 # Import and apply global patches for Kodi modules
-from .kodi_mocks import patch_kodi_modules_globally
+from kodi_mocks import patch_kodi_modules_globally
 
 # Add the lib directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../resources/lib')))
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../r
 from backend import prime_api
 from backend.prime_api import _NativeAPIIntegration, AuthenticationError, Playable
 
-class TestNativeAPIIntegration(unittest.TestCase):
+class TestNativeAPIIntegrationAsync(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         patch_kodi_modules_globally()
         self.patcher_session = patch('backend.prime_api.SessionManager')
