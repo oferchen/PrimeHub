@@ -1,4 +1,4 @@
-"""UI for handling login."""
+"""UI for handling login, inspired by Sandmann79/login.py."""
 from __future__ import annotations
 try:
     import xbmcgui
@@ -9,19 +9,25 @@ from ..common import Globals
 from ..backend.prime_api import get_prime_video
 
 def show_login_screen() -> bool:
-    """Displays a dialog for login and returns True on success."""
+    """
+    Displays a dialog for login and calls the backend to handle it.
+    """
     g = Globals()
     pv = get_prime_video()
     
-    # This would be a more complex flow in reality, potentially with a custom window
-    username = g.dialog.input("Username")
+    username = g.dialog.input("Username (email)")
     if not username: return False
     
     password = g.dialog.input("Password", option=xbmcgui.INPUT_PASSWORD)
     if not password: return False
 
-    # The login logic would be more sophisticated, with error handling
-    # success = pv.login(username, password)
-    # For now, we'll just assume it works for the stub.
-    g.dialog.notification("Login", "Login successful (mock).")
-    return True
+    try:
+        if pv.login(username, password):
+            g.dialog.notification("Login Successful", "You are now logged in.")
+            return True
+        else:
+            g.dialog.ok("Login Failed", "Please check your credentials or logs.")
+            return False
+    except Exception as e:
+        g.dialog.ok("Login Error", f"An unexpected error occurred: {e}")
+        return False

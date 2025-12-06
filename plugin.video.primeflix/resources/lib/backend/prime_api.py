@@ -24,9 +24,8 @@ class PrimeVideo(metaclass=Singleton):
 
     def login(self, username, password) -> bool:
         session = net.MechanizeLogin(username, password)
-        # In a real implementation, we would validate the session.
-        # For now, just having a session object is enough.
-        return session is not None
+        # The mock MechanizeLogin now adds a cookie, so we can check for it
+        return "session-id" in session.cookies
 
     def BuildRoot(self) -> bool:
         if not self._session_manager.is_logged_in(): return False
@@ -59,7 +58,6 @@ class PrimeVideo(metaclass=Singleton):
         return menu
 
     def _parse_item_list(self, data: Dict) -> Tuple[List[Dict], Optional[str]]:
-        # This is a simplified parser based on the API docs
         items = data.get("items", [])
         next_page = data.get("nextPageCursor")
         return items, next_page

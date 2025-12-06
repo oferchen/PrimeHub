@@ -10,13 +10,16 @@ except ImportError:
 
 from ..common import Globals
 from ..backend.prime_api import get_prime_video
+from ..backend.session import SessionManager
 
 def ensure_ready_or_raise() -> None:
     """
-    Ensures the environment is ready, checking for inputstream and DRM.
+    Ensures the environment is ready, checking for login, inputstream, and DRM.
     """
-    # In this new architecture, login is handled by the router.
-    # This check focuses on Kodi-specific components.
+    session_manager = SessionManager.get_instance()
+    if not session_manager.is_logged_in():
+        raise PreflightError("User is not logged in. Please use the login menu.")
+        
     if not _has_inputstream():
         raise PreflightError("inputstream.adaptive is not available.")
     
