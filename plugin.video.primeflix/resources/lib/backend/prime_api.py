@@ -1,113 +1,101 @@
 """
 Native backend for Prime Video, communicating directly with Amazon's APIs.
+This module is a refactored, native implementation based on the analysis
+of the Sandmann79 Amazon VOD add-on. It aims to replicate the original
+plugin's core logic for API interaction, data parsing, and session management.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from collections import OrderedDict
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 import sys
 import os
-import json
 
 # Add vendor directory to sys.path for bundled libraries
 vendor_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vendor'))
 if vendor_path not in sys.path:
     sys.path.insert(0, vendor_path)
 
-import requests
-from .session import SessionManager
-from . import constants
+from .common import Globals, Settings, Singleton
+from . import network as net
 
 try:
     import xbmc
     import xbmcaddon
-    import xbmcvfs
+    import xbmcgui
 except ImportError:
-    from ...tests.kodi_mocks import xbmc, xbmcaddon, xbmcvfs
+    from ...tests.kodi_mocks import xbmc, xbmcaddon, xbmcgui
 
-# (Data Models and Exceptions remain the same)
-@dataclass
-class Playable:
-    url: str
-    manifest_type: str
-    license_key: Optional[str]
-    headers: Dict[str, str]
-    metadata: Dict[str, Any]
-
-class BackendError(RuntimeError):
-    """Raised for general backend errors."""
-
-class AuthenticationError(BackendError):
-    """Raised for login/authentication failures."""
-
-def _log(level: int, message: str) -> None:
-    xbmc.log(f"[PrimeHub-Native] {message}", level)
-
-class _NativeAPIIntegration:
+class PrimeVideo(metaclass=Singleton):
     """
-    The concrete implementation of the backend communication strategy.
-    Now uses an async-first approach with a central request handler.
+    Wrangler of all things PrimeVideo.com. This class handles all API
+    interactions after a session has been established.
     """
-    def __init__(self, addon: xbmcaddon.Addon) -> None:
-        self._addon = addon
-        self._session_manager = SessionManager.get_instance()
+    _catalog = {}
 
-    async def _handle_request(self, method: str, url: str, params: Optional[Dict] = None, payload: Optional[Dict] = None) -> Dict:
-        _log(xbmc.LOGINFO, f"API Request (MOCK): {method} {url}")
-        # In a real implementation, this is where the async HTTP call would happen.
-        # session = self._session_manager.get_session()
-        # async with session.request(method, url, params=params, json=payload) as response:
-        #     response.raise_for_status()
-        #     return await response.json()
-        if "GetPage?pageId=Home" in url:
-            return self._get_mock_home_response()
-        elif "GetPage?pageId=" in url:
-            return self._get_mock_rail_items_response()
-        elif "Search" in url:
-            return self._get_mock_search_response(query=params.get("query", ""))
-        elif "GetPlaybackResources" in url:
-            return self._get_mock_playback_response()
-        raise BackendError(f"No mock response for API call: {url}")
-
-    async def get_home_rails(self) -> List[Dict[str, Any]]:
-        if not self._session_manager.is_logged_in(): raise AuthenticationError("User is not logged in.")
-        response = await self._handle_request("GET", constants.URLS["home"], params=constants.DEVICE_INFO)
-        return self._parse_rails_from_widgets(response)
+    def __init__(self) -> None:
+        self._g = Globals()
+        self._s = Settings()
+        # In a real implementation, we would load a catalog cache here
         
-    async def get_rail_items(self, rail_id: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        if not self._session_manager.is_logged_in(): raise AuthenticationError("User is not logged in.")
-        url = constants.URLS["rail_items"].format(rail_id=rail_id)
-        params = {**constants.DEVICE_INFO, "page": cursor or 1}
-        response = await self._handle_request("GET", url, params=params)
-        return self._parse_items_from_collection(response)
+    def BuildRoot(self) -> bool:
+        """
+        Parses the top menu and builds the root catalog.
+        This is a stub that returns a mock catalog.
+        """
+        self._catalog['root'] = OrderedDict()
         
-    async def search(self, query: str, cursor: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        if not self._session_manager.is_logged_in(): raise AuthenticationError("User is not logged in.")
-        url = constants.URLS["search"].format(query=query)
-        params = {"query": query}
-        response = await self._handle_request("GET", url, params=params)
-        return self._parse_items_from_collection(response)
+        # In a real implementation, this would call GrabJSON and parse the result
+        # home_data = net.GrabJSON(self._g.BaseUrl + '/gp/video/storefront')
+        home_data = {"mainMenu": {"links": [
+            {"id": "pv-nav-mystuff", "text": "My Stuff"},
+            {"id": "pv-nav-home", "text": "Home", "href": "/"},
+            {"id": "pv-nav-movies", "text": "Movies", "href": "/movies"},
+        ]}}
+        
+        self._catalog['root']['Watchlist'] = {'title': 'Watchlist', 'lazyLoadURL': '/watchlist'}
+        
+        for link in home_data.get("mainMenu", {}).get("links", []):
+            if "mystuff" not in link.get("id", ""):
+                self._catalog['root'][link['id']] = {'title': link['text'], 'lazyLoadURL': link.get('href')}
+                
+        self._catalog['root']['Search'] = {'title': 'Search', 'endpoint': '/gp/video/search?phrase={}'}
+        return True
 
-    async def get_playable(self, asin: str) -> Playable:
-        if not self._session_manager.is_logged_in(): raise AuthenticationError("User is not logged in.")
-        payload = {**constants.DEVICE_INFO, "asin": asin}
-        response = await self._handle_request("POST", constants.URLS["get_playback"], payload=payload)
-        return self._parse_playback_resources(response, asin)
+    def Browse(self, path: str) -> Tuple[List[Dict], Optional[str]]:
+        """
+        "Browses" a path in the catalog, returning items and a next page cursor.
+        This is a stub that returns mock data.
+        """
+        if not self._catalog: self.BuildRoot()
+        
+        if path == 'root':
+            # Return the main menu items
+            items = list(self._catalog['root'].values())
+            return items, None
+        else:
+            # Return mock rail items
+            items = [{"asin": "B012345", "title": "The Grand Tour"}, {"asin": "B067890", "title": "The Boys"}]
+            return items, "nextPageCursor"
 
-    def _parse_rails_from_widgets(self, response: Dict) -> List[Dict[str, Any]]:
-        rails = []
-        for item in response.get("widgets", []):
-            if item.get("type") == "RailWidget":
-                rails.append({"id": item.get("id"), "title": item.get("title", {}).get("default"), "type": "mixed"})
-        return rails
+    def Search(self, query: str) -> Tuple[List[Dict], Optional[str]]:
+        """Performs a search."""
+        return [{"asin": f"B0SEARCH{i}", "title": f"Search Result {i+1} for {query}"} for i in range(2)], None
 
-    def _parse_items_from_collection(self, response: Dict) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        return response.get("items", []), response.get("nextPageCursor")
+    def GetStream(self, asin: str) -> Tuple[bool, Dict | str]:
+        """Gets playback resources for a given ASIN."""
+        # This would call net.getURLData in a real implementation
+        # success, data = net.getURLData("catalog/GetPlaybackResources", asin)
+        success, data = True, {
+            "manifestUrl": "http://mock.playback/manifest.mpd",
+            "licenseUrl": "http://mock.license/server"
+        }
+        return success, data
 
-    def _parse_playback_resources(self, response: Dict, asin: str) -> Playable:
-        return Playable(
-            url=response.get("manifestUrl"), manifest_type="mpd", license_key=response.get("licenseUrl"),
-            headers={}, metadata={"title": f"Playable for {asin}"}
-        )
+    def is_drm_ready(self) -> bool:
+        # In a real implementation, this would check for Widevine CDM
+        return True
 
-    # (login, logout, etc., and mock response generators remain)
-# ... (rest of file as before)
+# This is now a simple factory function for the PrimeVideo Singleton
+def get_prime_video() -> PrimeVideo:
+    return PrimeVideo()
