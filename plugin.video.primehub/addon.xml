@@ -2,6 +2,8 @@
 <addon id="plugin.video.primehub" name="PrimeHub" version="2.1.0" provider-name="PrimeHub Team">
     <requires>
         <import addon="xbmc.python" version="3.0.1" />
+        <import addon="script.module.requests" version="2.22.0"/>
+        <import addon="script.module.mechanicalsoup" version="0.12.0"/>
         <import addon="inputstream.adaptive" version="21.0.0" optional="true" />
     </requires>
     <extension point="xbmc.python.pluginsource" library="default.py">
