@@ -28,5 +28,42 @@ def show_search(context, pv: PrimeVideo, query: Optional[str]) -> None:
         _render_items(context, items)
 
 def _render_items(context, items: List[Dict], next_page: Optional[str] = None):
-    # ... (implementation to create and add ListItems)
-    pass
+    """Renders a list of items and sets the view to a poster layout."""
+    try:
+        import xbmc
+    except ImportError:
+        from ...tests.kodi_mocks import xbmc
+
+    # Set the content type to "videos" to enable library-like features
+    xbmcplugin.setContent(context.handle, "videos")
+
+    list_items = []
+    for item in items:
+        li = xbmcgui.ListItem(label=item.get("title", ""))
+        # Set the plot and other metadata
+        li.setInfo("video", {
+            "title": item.get("title", ""),
+            "plot": item.get("plot", ""),
+            "mediatype": "video" # Generic video type
+        })
+        # Set the artwork
+        art = item.get("art", {})
+        li.setArt({
+            "poster": art.get("poster"),
+            "fanart": art.get("fanart"),
+            "icon": art.get("poster") # Use poster for icon as well
+        })
+        # Mark the item as playable
+        li.setProperty("IsPlayable", "true")
+        url = context.build_url(action="play", asin=item.get("asin"))
+        list_items.append((url, li, False))
+
+    if next_page:
+        next_li = xbmcgui.ListItem(label="Next Page...")
+        next_url = context.build_url(action="list", rail_id=next_page)
+        list_items.append((next_url, next_li, True))
+
+    xbmcplugin.addDirectoryItems(context.handle, list_items, len(list_items))
+    
+    # Set the view mode to a poster/wall view. 500 is a common ID for "Wall".
+    xbmc.executebuiltin('Container.SetViewMode(500)')

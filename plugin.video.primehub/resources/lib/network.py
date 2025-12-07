@@ -59,8 +59,29 @@ def getURL(url: str, useCookie: bool = False, headers: Optional[Dict] = None, po
     # ...
     return ""
 def GrabJSON(url: str, postData: Optional[Dict] = None) -> Dict:
-    # ...
-    return {}
+    _log(xbmc.LOGINFO, f"GrabJSON (MOCK) from {url}")
+    
+    # Generic art for placeholders
+    mock_poster = "https://placehold.co/500x750.png"
+    mock_fanart = "https://placehold.co/1280x720.png"
+    
+    mock_items = [
+        {"asin": "B01", "title": "The Grand Tour", "plot": "Motoring show with three hosts.", "art": {"poster": mock_poster, "fanart": mock_fanart}},
+        {"asin": "B02", "title": "The Boys", "plot": "Superheroes who are not so heroic.", "art": {"poster": mock_poster, "fanart": mock_fanart}},
+        {"asin": "B03", "title": "Invincible", "plot": "A young hero discovers his powers.", "art": {"poster": mock_poster, "fanart": mock_fanart}},
+        {"asin": "B04", "title": "Reacher", "plot": "A former military policeman investigates.", "art": {"poster": mock_poster, "fanart": mock_fanart}},
+        {"asin": "B05", "title": "Fleabag", "plot": "A dry-witted woman navigates life.", "art": {"poster": mock_poster, "fanart": mock_fanart}},
+    ]
+    
+    if "storefront" in url:
+        return {"mainMenu": {"links": [
+            {"id": "pv-nav-movies", "text": "Movies", "href": "/movies"},
+            {"id": "pv-nav-tv", "text": "TV Shows", "href": "/tv"},
+        ]}}
+    elif "search" in url:
+        return {"items": mock_items[:2]}
+    else: # For a rail
+        return {"items": mock_items, "nextPageCursor": "mock_next_page_cursor"}
 def getURLData(mode: str, asin: str, **kwargs) -> Tuple[bool, Dict | str]:
     # ...
     return False, ""

@@ -24,6 +24,18 @@ def show_home(context, pv: PrimeVideo) -> None:
     rails, _ = pv.Browse('root')
     
     list_items = []
+    
+    # Take the first rail as our "Hero" item
+    if rails:
+        hero_rail = rails.pop(0)
+        hero_li = xbmcgui.ListItem(label=f"[B]{hero_rail.get('title', '')}[/B]")
+        # For a hero item, we'd want prominent art. We'll use fanart as the poster for now.
+        hero_li.setArt({"icon": g.DefaultFanart, "fanart": g.DefaultFanart, "poster": g.DefaultFanart})
+        hero_li.setProperty("isHero", "true") # For potential skin integration
+        url = context.build_url(action="list", rail_id=hero_rail.get("lazyLoadURL"))
+        # Add it as the first item
+        xbmcplugin.addDirectoryItem(context.handle, url, hero_li, True)
+
     for rail in rails:
         li = xbmcgui.ListItem(label=rail.get("title", ""))
         li.setArt({"icon": "DefaultFolder.png", "fanart": g.DefaultFanart})
